@@ -2,11 +2,22 @@ import React, { useState, useEffect, useCallback } from 'react'
 import { QRCodeSVG } from 'qrcode.react'
 import { supabase, Session, AttendanceRecord } from '../lib/supabase'
 import GlowBg from '../components/GlowBg'
-import type { User } from '@supabase/supabase-js'
+
+/* ─────────────────── CONFIG ─────────────────── */
+const TEACHER_PASSWORD = '@deeplearning2026'
+const TEACHER_NAME = 'Gasasira Felix'
+
+/* ─────────────────── TYPES ─────────────────── */
+interface FailedLogin {
+  id: string
+  attempted_at: string
+  browser: string
+  ip_address: string
+  location: string
+}
 
 /* ─────────────────── STYLES ─────────────────── */
 const s: Record<string, React.CSSProperties> = {
-  page: { minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' },
   loginBox: {
     background: 'var(--surface)', border: '1px solid var(--border)',
     borderRadius: 20, padding: '48px 40px', width: '100%', maxWidth: 420,
@@ -27,7 +38,7 @@ const s: Record<string, React.CSSProperties> = {
   input: {
     width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)',
     borderRadius: 10, padding: '12px 16px', color: 'var(--text)',
-    fontFamily: 'var(--font-mono)', fontSize: 14, outline: 'none',
+    fontFamily: 'var(--font-mono)', fontSize: 14, outline: 'none', boxSizing: 'border-box',
   },
   btnPrimary: {
     width: '100%', background: 'var(--accent)', color: '#fff', border: 'none',
@@ -42,16 +53,12 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
     padding: '20px 32px', borderBottom: '1px solid var(--border)',
     background: 'rgba(10,10,15,0.8)', backdropFilter: 'blur(12px)',
-    position: 'sticky', top: 0, zIndex: 100,
+    position: 'sticky', top: 0, zIndex: 100, flexWrap: 'wrap', gap: 12,
   },
   logo: {
     fontSize: 20, fontWeight: 800,
     background: 'linear-gradient(135deg, var(--accent), var(--accent2))',
     WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-  },
-  pill: {
-    background: 'var(--surface2)', border: '1px solid var(--border)',
-    borderRadius: 999, padding: '6px 14px', fontSize: 13, color: 'var(--muted)',
   },
   btnLogout: {
     background: 'transparent', border: '1px solid var(--border)', borderRadius: 8,
@@ -77,19 +84,12 @@ const s: Record<string, React.CSSProperties> = {
     display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
     gap: 20, marginBottom: 32,
   },
-  sessionCard: {
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 16, padding: 20, animation: 'fadeIn 0.3s ease',
+  noSessions: { textAlign: 'center', padding: '48px 32px', color: 'var(--muted)' },
+  spinner: {
+    width: 20, height: 20, border: '2px solid var(--border)',
+    borderTopColor: 'var(--accent)', borderRadius: '50%',
+    animation: 'spin 0.8s linear infinite', display: 'inline-block',
   },
-  sessionName: { fontSize: 18, fontWeight: 700 },
-  sessionTime: { fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 4 },
-  statBox: {
-    background: 'var(--surface2)', borderRadius: 8,
-    padding: '8px 12px', flex: 1, textAlign: 'center',
-  },
-  statNum: { fontSize: 22, fontWeight: 800, color: 'var(--accent)' },
-  statLabel: { fontSize: 11, color: 'var(--muted)', marginTop: 2 },
-  btnSm: { borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12, fontWeight: 700, cursor: 'pointer', border: 'none' },
   overlay: {
     position: 'fixed', inset: 0, zIndex: 200,
     background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
@@ -129,21 +129,37 @@ const s: Record<string, React.CSSProperties> = {
     borderBottom: '1px solid var(--border)',
   },
   td: { padding: '10px 12px', borderBottom: '1px solid rgba(42,42,58,0.5)' },
-  noSessions: { textAlign: 'center', padding: '48px 32px', color: 'var(--muted)' },
-  spinner: {
-    width: 20, height: 20, border: '2px solid var(--border)',
-    borderTopColor: 'var(--accent)', borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite', display: 'inline-block',
+  alertBanner: {
+    background: 'rgba(252,108,143,0.12)', borderBottom: '1px solid rgba(252,108,143,0.3)',
+    padding: '12px 32px', display: 'flex', alignItems: 'center',
+    justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+  },
+  alertText: { fontSize: 13, color: 'var(--accent2)', fontWeight: 600 },
+  btnViewAlerts: {
+    background: 'rgba(252,108,143,0.15)', border: '1px solid rgba(252,108,143,0.3)',
+    borderRadius: 8, padding: '6px 14px', color: 'var(--accent2)',
+    fontFamily: 'var(--font-head)', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+  },
+  teacherBadge: {
+    display: 'flex', alignItems: 'center', gap: 8,
+    background: 'rgba(124,108,252,0.12)', border: '1px solid rgba(124,108,252,0.25)',
+    borderRadius: 999, padding: '6px 14px',
+  },
+  teacherAvatar: {
+    width: 28, height: 28, borderRadius: '50%',
+    background: 'linear-gradient(135deg, var(--accent), var(--accent2))',
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    fontSize: 12, fontWeight: 800, color: '#fff', flexShrink: 0,
   },
 }
 
 /* ─────────────────── COMPONENT ─────────────────── */
 export default function TeacherDashboard() {
-  const [user, setUser] = useState<User | null>(null)
-  const [email, setEmail] = useState('')
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
   const [password, setPassword] = useState('')
   const [loginErr, setLoginErr] = useState('')
-  const [loginLoading, setLoginLoading] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [loggingIn, setLoggingIn] = useState(false)
 
   const [sessions, setSessions] = useState<Session[]>([])
   const [countMap, setCountMap] = useState<Record<string, number>>({})
@@ -156,26 +172,65 @@ export default function TeacherDashboard() {
   const [attLoading, setAttLoading] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  // ── Auto session check
+  const [failedLogins, setFailedLogins] = useState<FailedLogin[]>([])
+  const [showFailedModal, setShowFailedModal] = useState(false)
+  const [newFailedCount, setNewFailedCount] = useState(0)
+
+  const initials = TEACHER_NAME.split(' ').map(n => n[0]).join('').toUpperCase()
+
+  // ── Restore session on page load
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session?.user) setUser(data.session.user)
-    })
+    const saved = sessionStorage.getItem('teacher_auth')
+    if (saved === 'true') setIsLoggedIn(true)
   }, [])
+
+  // ── Load failed logins
+  const loadFailedLogins = useCallback(async () => {
+    if (!isLoggedIn) return
+    const { data } = await supabase
+      .from('failed_logins')
+      .select('*')
+      .order('attempted_at', { ascending: false })
+      .limit(50)
+    if (data) {
+      setFailedLogins(prev => {
+        const newOnes = data.length - prev.length
+        if (newOnes > 0 && prev.length > 0) setNewFailedCount(c => c + newOnes)
+        return data as FailedLogin[]
+      })
+    }
+  }, [isLoggedIn])
+
+  useEffect(() => {
+    loadFailedLogins()
+    const interval = setInterval(loadFailedLogins, 30000)
+    return () => clearInterval(interval)
+  }, [loadFailedLogins])
+
+  // ── Realtime: new failed login
+  useEffect(() => {
+    if (!isLoggedIn) return
+    const channel = supabase
+      .channel('failed-logins-rt')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'failed_logins' }, (payload) => {
+        setFailedLogins(prev => [payload.new as FailedLogin, ...prev])
+        setNewFailedCount(c => c + 1)
+      })
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
+  }, [isLoggedIn])
 
   // ── Load sessions
   const loadSessions = useCallback(async () => {
-    if (!user) return
+    if (!isLoggedIn) return
     const { data } = await supabase
       .from('sessions')
       .select('*')
-      .eq('created_by', user.id)
       .order('created_at', { ascending: false })
     if (!data) return
     setSessions(data as Session[])
-
     if (data.length > 0) {
-      const ids = data.map((s) => s.id)
+      const ids = data.map(s => s.id)
       const { data: counts } = await supabase
         .from('attendance')
         .select('session_id')
@@ -186,11 +241,11 @@ export default function TeacherDashboard() {
       })
       setCountMap(map)
     }
-  }, [user])
+  }, [isLoggedIn])
 
   useEffect(() => { loadSessions() }, [loadSessions])
 
-  // ── Realtime attendance
+  // ── Realtime: new attendance
   useEffect(() => {
     const channel = supabase
       .channel('attendance-rt')
@@ -202,28 +257,46 @@ export default function TeacherDashboard() {
     return () => { supabase.removeChannel(channel) }
   }, [loadSessions, attModal])
 
+  // ── Get device info for failed login logging
+  const getDeviceInfo = async () => {
+    const browser = navigator.userAgent
+    let ip = 'Unknown'
+    let location = 'Unknown'
+    try {
+      const res = await fetch('https://ipapi.co/json/')
+      const geo = await res.json()
+      ip = geo.ip || 'Unknown'
+      location = [geo.city, geo.region, geo.country_name].filter(Boolean).join(', ') || 'Unknown'
+    } catch { /* silent */ }
+    return { browser, ip, location }
+  }
+
   // ── Login
   const handleLogin = async () => {
     setLoginErr('')
-    if (!email || !password) { setLoginErr('Please fill in all fields.'); return }
-    setLoginLoading(true)
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password })
-    setLoginLoading(false)
-    if (error) { setLoginErr(error.message); return }
-    setUser(data.user)
+    if (!password) { setLoginErr('Please enter the password.'); return }
+    setLoggingIn(true)
+    if (password === TEACHER_PASSWORD) {
+      sessionStorage.setItem('teacher_auth', 'true')
+      sessionStorage.setItem('teacher_name', TEACHER_NAME)
+      setIsLoggedIn(true)
+      setPassword('')
+    } else {
+      setLoginErr('❌ Incorrect password. This attempt has been logged.')
+      const { browser, ip, location } = await getDeviceInfo()
+      await supabase.from('failed_logins').insert({ browser, ip_address: ip, location })
+    }
+    setLoggingIn(false)
   }
 
-  const handleSignup = async () => {
-    if (!email || !password) { setLoginErr('Enter email and password to register.'); return }
-    const { error } = await supabase.auth.signUp({ email, password })
-    if (error) { setLoginErr(error.message); return }
-    setLoginErr('✅ Account created! Check your email to confirm, then sign in.')
-  }
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut()
-    setUser(null)
+  // ── Logout
+  const handleLogout = () => {
+    sessionStorage.removeItem('teacher_auth')
+    sessionStorage.removeItem('teacher_name')
+    setIsLoggedIn(false)
     setSessions([])
+    setFailedLogins([])
+    setNewFailedCount(0)
   }
 
   // ── Create session
@@ -232,7 +305,6 @@ export default function TeacherDashboard() {
     setCreating(true)
     await supabase.from('sessions').insert({
       name: newSessionName.trim(),
-      created_by: user!.id,
       is_active: true,
     })
     setNewSessionName('')
@@ -247,7 +319,7 @@ export default function TeacherDashboard() {
     loadSessions()
   }
 
-  // ── Load attendance list
+  // ── Load attendance
   const loadAttendance = async (sessionId: string) => {
     setAttLoading(true)
     const { data } = await supabase
@@ -274,41 +346,49 @@ export default function TeacherDashboard() {
   }
 
   /* ── LOGIN SCREEN ── */
-  if (!user) {
+  if (!isLoggedIn) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <GlowBg />
         <div style={s.loginBox}>
           <div style={s.badge}>🎓 Teacher Portal</div>
-          <h1 style={s.h1}>Welcome back,<br />Professor.</h1>
-          <p style={s.sub}>Sign in to manage your attendance sessions.</p>
+          <h1 style={s.h1}>Welcome back,<br />{TEACHER_NAME}.</h1>
+          <p style={s.sub}>Enter the teacher password to access your dashboard.</p>
 
-          <div style={{ marginBottom: 16 }}>
-            <label style={s.label}>Email</label>
-            <input style={s.input} type="email" placeholder="you@school.edu"
-              value={email} onChange={e => setEmail(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleLogin()} />
-          </div>
-          <div style={{ marginBottom: 16 }}>
+          <div style={{ marginBottom: 20 }}>
             <label style={s.label}>Password</label>
-            <input style={s.input} type="password" placeholder="••••••••"
-              value={password} onChange={e => setPassword(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleLogin()} />
+            <div style={{ position: 'relative' }}>
+              <input
+                style={{ ...s.input, paddingRight: 48 }}
+                type={showPassword ? 'text' : 'password'}
+                placeholder="••••••••"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleLogin()}
+                autoFocus
+              />
+              <button
+                onClick={() => setShowPassword(p => !p)}
+                style={{
+                  position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
+                  background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16,
+                }}>
+                {showPassword ? '🙈' : '👁️'}
+              </button>
+            </div>
           </div>
 
-          <button style={{ ...s.btnPrimary, opacity: loginLoading ? 0.5 : 1 }}
-            onClick={handleLogin} disabled={loginLoading}>
-            {loginLoading ? 'Signing in…' : 'Sign In'}
+          <button
+            style={{ ...s.btnPrimary, opacity: loggingIn ? 0.6 : 1 }}
+            onClick={handleLogin}
+            disabled={loggingIn}>
+            {loggingIn ? 'Signing in…' : 'Sign In →'}
           </button>
 
           {loginErr && <div style={s.errBox}>{loginErr}</div>}
 
-          <p style={{ marginTop: 20, fontSize: 12, color: 'var(--muted)', textAlign: 'center' }}>
-            No account yet?{' '}
-            <span onClick={handleSignup}
-              style={{ color: 'var(--accent)', cursor: 'pointer', fontWeight: 600 }}>
-              Create one
-            </span>
+          <p style={{ marginTop: 20, fontSize: 11, color: 'var(--muted)', textAlign: 'center' }}>
+            ⚠️ Failed login attempts are logged with device info &amp; location.
           </p>
         </div>
       </div>
@@ -320,12 +400,25 @@ export default function TeacherDashboard() {
     <div style={{ minHeight: '100vh' }}>
       <GlowBg />
 
+      {/* Failed Login Alert Banner */}
+      {failedLogins.length > 0 && (
+        <div style={s.alertBanner}>
+          <span style={s.alertText}>
+            🚨 {newFailedCount > 0 ? `${newFailedCount} new` : failedLogins.length} failed login attempt{failedLogins.length !== 1 ? 's' : ''} detected
+          </span>
+          <button style={s.btnViewAlerts} onClick={() => { setShowFailedModal(true); setNewFailedCount(0) }}>
+            View Details
+          </button>
+        </div>
+      )}
+
       {/* Topbar */}
       <div style={s.topbar}>
         <div style={s.logo}>AttendAI</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-          <div style={s.pill}>
-            Signed in as <strong style={{ color: 'var(--text)' }}>{user.email}</strong>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={s.teacherBadge}>
+            <div style={s.teacherAvatar}>{initials}</div>
+            <span style={{ color: 'var(--text)', fontWeight: 600, fontSize: 13 }}>{TEACHER_NAME}</span>
           </div>
           <button style={s.btnLogout} onClick={handleLogout}>Sign Out</button>
         </div>
@@ -402,9 +495,7 @@ export default function TeacherDashboard() {
             <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 24 }}>{attModal.name}</p>
             <div style={s.attScroll}>
               {attLoading ? (
-                <div style={{ textAlign: 'center', padding: 32 }}>
-                  <div style={s.spinner} />
-                </div>
+                <div style={{ textAlign: 'center', padding: 32 }}><div style={s.spinner} /></div>
               ) : attList.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 32, color: 'var(--muted)', fontSize: 14 }}>
                   No students have registered yet.
@@ -435,6 +526,51 @@ export default function TeacherDashboard() {
           </div>
         </div>
       )}
+
+      {/* Failed Logins Modal */}
+      {showFailedModal && (
+        <div style={s.overlay} onClick={e => e.target === e.currentTarget && setShowFailedModal(false)}>
+          <div style={{ ...s.modal, maxWidth: 680 }}>
+            <button style={s.modalClose} onClick={() => setShowFailedModal(false)}>✕</button>
+            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>🚨 Failed Login Attempts</h2>
+            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 24 }}>
+              Someone tried to access the teacher dashboard with the wrong password.
+            </p>
+            <div style={s.attScroll}>
+              {failedLogins.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 32, color: 'var(--muted)', fontSize: 14 }}>
+                  No failed attempts recorded.
+                </div>
+              ) : (
+                <table style={s.table}>
+                  <thead>
+                    <tr>
+                      <th style={s.th}>Time</th>
+                      <th style={s.th}>IP Address</th>
+                      <th style={s.th}>Location</th>
+                      <th style={s.th}>Device / Browser</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {failedLogins.map(f => (
+                      <tr key={f.id}>
+                        <td style={{ ...s.td, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                          {new Date(f.attempted_at).toLocaleString()}
+                        </td>
+                        <td style={{ ...s.td, fontFamily: 'var(--font-mono)', fontSize: 12 }}>{f.ip_address}</td>
+                        <td style={{ ...s.td, fontSize: 12 }}>{f.location}</td>
+                        <td style={{ ...s.td, fontSize: 11, color: 'var(--muted)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {f.browser}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -450,52 +586,46 @@ interface SessionCardProps {
 
 function SessionCard({ session, count, onShowQR, onViewList, onClose }: SessionCardProps) {
   const date = new Date(session.created_at).toLocaleString()
-
   return (
     <div style={{
-      ...s.sessionCard,
-      borderColor: session.is_active ? 'rgba(124,108,252,0.5)' : 'var(--border)',
+      background: 'var(--surface)', borderRadius: 16, padding: 20,
+      animation: 'fadeIn 0.3s ease',
+      border: `1px solid ${session.is_active ? 'rgba(124,108,252,0.5)' : 'var(--border)'}`,
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
-          <div style={s.sessionName}>{session.name}</div>
-          <div style={s.sessionTime}>{date}</div>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>{session.name}</div>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{date}</div>
         </div>
         <StatusDot active={session.is_active} />
       </div>
 
       <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-        <div style={s.statBox}>
-          <div style={s.statNum}>{count}</div>
-          <div style={s.statLabel}>Students</div>
+        <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '8px 12px', flex: 1, textAlign: 'center' }}>
+          <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--accent)' }}>{count}</div>
+          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Students</div>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {session.is_active && (
-          <button style={{
-            ...s.btnSm,
+          <button onClick={onShowQR} style={{
+            borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12,
+            fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(124,108,252,0.3)',
             background: 'rgba(124,108,252,0.15)', color: 'var(--accent)',
-            border: '1px solid rgba(124,108,252,0.3)',
-          }} onClick={onShowQR}>
-            📱 Show QR
-          </button>
+          }}>📱 Show QR</button>
         )}
-        <button style={{
-          ...s.btnSm,
+        <button onClick={onViewList} style={{
+          borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12,
+          fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(74,222,128,0.25)',
           background: 'rgba(74,222,128,0.1)', color: 'var(--green)',
-          border: '1px solid rgba(74,222,128,0.25)',
-        }} onClick={onViewList}>
-          📋 View List
-        </button>
+        }}>📋 View List</button>
         {session.is_active && (
-          <button style={{
-            ...s.btnSm,
+          <button onClick={onClose} style={{
+            borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12,
+            fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(252,108,143,0.25)',
             background: 'rgba(252,108,143,0.1)', color: 'var(--accent2)',
-            border: '1px solid rgba(252,108,143,0.25)',
-          }} onClick={onClose}>
-            🔒 Close
-          </button>
+          }}>🔒 Close</button>
         )}
       </div>
     </div>
@@ -505,8 +635,8 @@ function SessionCard({ session, count, onShowQR, onViewList, onClose }: SessionC
 function StatusDot({ active }: { active: boolean }) {
   return (
     <div style={{
-      display: 'flex', alignItems: 'center', gap: 6,
-      fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 999,
+      display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600,
+      padding: '4px 10px', borderRadius: 999,
       background: active ? 'rgba(74,222,128,0.15)' : 'rgba(107,107,138,0.15)',
       color: active ? 'var(--green)' : 'var(--muted)',
     }}>
