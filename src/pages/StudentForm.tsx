@@ -80,10 +80,7 @@ const s: Record<string, React.CSSProperties> = {
   },
 }
 
-/* ── Device fingerprint ──
-   Uses more entropy sources so students on similar devices still get different hashes.
-   We also mix in a random per-browser token stored in localStorage so two different
-   students opening the form on different browsers/tabs get different fingerprints. */
+/* ── Device fingerprint ── */
 function getBrowserToken(): string {
   const key = '__attend_browser_token__'
   let token = localStorage.getItem(key)
@@ -105,7 +102,7 @@ function getFingerprint(): string {
     new Date().getTimezoneOffset(),
     (nav as unknown as Record<string, unknown>).hardwareConcurrency ?? '',
     (nav as unknown as Record<string, unknown>).deviceMemory ?? '',
-    getBrowserToken(),          // unique per browser install
+    getBrowserToken(),
   ].join('|')
 
   let h1 = 0xdeadbeef, h2 = 0x41c6ce57
@@ -119,7 +116,6 @@ function getFingerprint(): string {
   return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
 }
 
-/* ── IP fetch (kept for logging only – NOT used for duplicate blocking) ── */
 async function getIP(): Promise<string> {
   try {
     const r = await fetch('https://api.ipify.org?format=json')
@@ -130,19 +126,18 @@ async function getIP(): Promise<string> {
   }
 }
 
-/* ── localStorage block keyed on session + normalised student name
-   This prevents the SAME student submitting twice on the same browser,
-   but does NOT block a different student using the same device. ── */
-function localBlockKey(sessionId: string, name: string): string {
-  return `attended_${sessionId}_${name.trim().toLowerCase().replace(/\s+/g, '_')}`
+/* ── Device-level block: one submission per device per session ──
+   Keyed on sessionId + fingerprint so a different session on the same device works fine. */
+function deviceBlockKey(sessionId: string, fingerprint: string): string {
+  return `device_attended_${sessionId}_${fingerprint}`
 }
 
-function isLocallyBlocked(sessionId: string, name: string): boolean {
-  return localStorage.getItem(localBlockKey(sessionId, name)) === '1'
+function isDeviceBlocked(sessionId: string, fingerprint: string): boolean {
+  return localStorage.getItem(deviceBlockKey(sessionId, fingerprint)) === '1'
 }
 
-function setLocalBlock(sessionId: string, name: string): void {
-  localStorage.setItem(localBlockKey(sessionId, name), '1')
+function setDeviceBlock(sessionId: string, fingerprint: string): void {
+  localStorage.setItem(deviceBlockKey(sessionId, fingerprint), '1')
 }
 
 /* ── Component ── */
@@ -155,13 +150,19 @@ export default function StudentForm() {
   const [studentName, setStudentName] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [focusInput, setFocusInput] = useState(false)
+  const [fingerprint] = useState(() => getFingerprint())
 
-  // Success state
   const [successName, setSuccessName] = useState('')
   const [successTime, setSuccessTime] = useState('')
 
   useEffect(() => {
     if (!sessionId) { setAppState('error'); return }
+
+    // Check device block before even loading session
+    if (isDeviceBlocked(sessionId, fingerprint)) {
+      setAppState('blocked')
+      return
+    }
 
     supabase.from('sessions').select('*').eq('id', sessionId).single()
       .then(({ data, error }) => {
@@ -171,22 +172,21 @@ export default function StudentForm() {
         setSessionData(session)
         setAppState('form')
       })
-  }, [sessionId])
+  }, [sessionId, fingerprint])
 
   const handleSubmit = async () => {
     const name = studentName.trim()
     if (!name || name.length < 2) { alert('Please enter your full name.'); return }
 
-    // Check if THIS student already submitted from THIS browser
-    if (isLocallyBlocked(sessionId, name)) {
-      alert(`"${name}" has already submitted attendance for this session.`)
+    // Double-check device block
+    if (isDeviceBlocked(sessionId, fingerprint)) {
+      setAppState('blocked')
       return
     }
 
     setSubmitting(true)
 
-    const fingerprint = getFingerprint()
-    const ip = await getIP()          // stored for teacher reference, not used to block
+    const ip = await getIP()
 
     const { error } = await supabase.from('attendance').insert({
       session_id: sessionId,
@@ -196,10 +196,10 @@ export default function StudentForm() {
     })
 
     if (error) {
-      // Unique constraint violation – this student already exists in the DB
       if (error.code === '23505' || error.message.includes('unique')) {
-        setLocalBlock(sessionId, name)
-        alert(`"${name}" has already been recorded for this session.`)
+        // Already in DB — lock this device too
+        setDeviceBlock(sessionId, fingerprint)
+        setAppState('blocked')
         setSubmitting(false)
         return
       }
@@ -208,16 +208,11 @@ export default function StudentForm() {
       return
     }
 
-    setLocalBlock(sessionId, name)
+    // Lock this device for this session permanently
+    setDeviceBlock(sessionId, fingerprint)
     setSuccessName(name)
     setSuccessTime(new Date().toLocaleTimeString())
     setAppState('success')
-  }
-
-  /* After success, allow another student to submit on the same device */
-  const handleAnotherStudent = () => {
-    setStudentName('')
-    setAppState('form')
   }
 
   return (
@@ -269,7 +264,7 @@ export default function StudentForm() {
               {submitting ? 'Submitting…' : 'Submit Attendance'}
             </button>
             <div style={s.note}>
-              ✏️ Each student must enter their own name. Duplicate names for the same session will be rejected.
+              ✏️ Enter your own name. One submission per device per session.
             </div>
           </>
         )}
@@ -279,7 +274,7 @@ export default function StudentForm() {
           <>
             <div style={s.successIcon}>✓</div>
             <div style={s.successTitle}>Attendance Marked!</div>
-            <p style={s.successSub}>Your attendance has been recorded successfully.</p>
+            <p style={s.successSub}>Your attendance has been recorded. You may close this page.</p>
             <div style={s.recordBox}>
               {[
                 { label: 'Name', value: successName },
@@ -295,20 +290,17 @@ export default function StudentForm() {
                 </div>
               ))}
             </div>
+          </>
+        )}
 
-            {/* Let the next student use the same device */}
-            <button
-              style={{
-                ...s.btnSubmit,
-                marginTop: 20,
-                background: 'var(--surface2)',
-                color: 'var(--text)',
-                border: '1px solid var(--border)',
-              }}
-              onClick={handleAnotherStudent}
-            >
-              Another Student →
-            </button>
+        {/* BLOCKED — device already submitted */}
+        {appState === 'blocked' && (
+          <>
+            <div style={s.stateIcon as React.CSSProperties}>🚫</div>
+            <div style={{ ...s.stateTitle, color: 'var(--accent2)' }}>Already Submitted</div>
+            <p style={s.stateSub}>
+              Attendance from this device has already been recorded for this session.
+            </p>
           </>
         )}
 
