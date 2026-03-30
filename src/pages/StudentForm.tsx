@@ -41,7 +41,7 @@ const s: Record<string, React.CSSProperties> = {
     width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)',
     borderRadius: 12, padding: '14px 16px', color: 'var(--text)',
     fontFamily: 'var(--font-head)', fontSize: 16, outline: 'none',
-    transition: 'border-color 0.2s',
+    transition: 'border-color 0.2s', boxSizing: 'border-box',
   },
   btnSubmit: {
     width: '100%',
@@ -80,24 +80,46 @@ const s: Record<string, React.CSSProperties> = {
   },
 }
 
-/* ── Device fingerprint ── */
+/* ── Device fingerprint ──
+   Uses more entropy sources so students on similar devices still get different hashes.
+   We also mix in a random per-browser token stored in localStorage so two different
+   students opening the form on different browsers/tabs get different fingerprints. */
+function getBrowserToken(): string {
+  const key = '__attend_browser_token__'
+  let token = localStorage.getItem(key)
+  if (!token) {
+    token = Math.random().toString(36).slice(2) + Date.now().toString(36)
+    localStorage.setItem(key, token)
+  }
+  return token
+}
+
 function getFingerprint(): string {
   const nav = window.navigator
   const raw = [
-    nav.userAgent, nav.language, nav.platform,
-    `${screen.width}x${screen.height}`, screen.colorDepth,
+    nav.userAgent,
+    nav.language,
+    nav.languages?.join(',') ?? '',
+    nav.platform,
+    `${screen.width}x${screen.height}x${screen.colorDepth}`,
     new Date().getTimezoneOffset(),
     (nav as unknown as Record<string, unknown>).hardwareConcurrency ?? '',
     (nav as unknown as Record<string, unknown>).deviceMemory ?? '',
+    getBrowserToken(),          // unique per browser install
   ].join('|')
-  let hash = 0
+
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57
   for (let i = 0; i < raw.length; i++) {
-    hash = ((hash << 5) - hash) + raw.charCodeAt(i)
-    hash |= 0
+    const ch = raw.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
   }
-  return Math.abs(hash).toString(36)
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36)
 }
 
+/* ── IP fetch (kept for logging only – NOT used for duplicate blocking) ── */
 async function getIP(): Promise<string> {
   try {
     const r = await fetch('https://api.ipify.org?format=json')
@@ -108,12 +130,19 @@ async function getIP(): Promise<string> {
   }
 }
 
-function isLocallyBlocked(sessionId: string): boolean {
-  return localStorage.getItem(`attended_${sessionId}`) === '1'
+/* ── localStorage block keyed on session + normalised student name
+   This prevents the SAME student submitting twice on the same browser,
+   but does NOT block a different student using the same device. ── */
+function localBlockKey(sessionId: string, name: string): string {
+  return `attended_${sessionId}_${name.trim().toLowerCase().replace(/\s+/g, '_')}`
 }
 
-function setLocalBlock(sessionId: string): void {
-  localStorage.setItem(`attended_${sessionId}`, '1')
+function isLocallyBlocked(sessionId: string, name: string): boolean {
+  return localStorage.getItem(localBlockKey(sessionId, name)) === '1'
+}
+
+function setLocalBlock(sessionId: string, name: string): void {
+  localStorage.setItem(localBlockKey(sessionId, name), '1')
 }
 
 /* ── Component ── */
@@ -133,7 +162,6 @@ export default function StudentForm() {
 
   useEffect(() => {
     if (!sessionId) { setAppState('error'); return }
-    if (isLocallyBlocked(sessionId)) { setAppState('blocked'); return }
 
     supabase.from('sessions').select('*').eq('id', sessionId).single()
       .then(({ data, error }) => {
@@ -148,10 +176,17 @@ export default function StudentForm() {
   const handleSubmit = async () => {
     const name = studentName.trim()
     if (!name || name.length < 2) { alert('Please enter your full name.'); return }
+
+    // Check if THIS student already submitted from THIS browser
+    if (isLocallyBlocked(sessionId, name)) {
+      alert(`"${name}" has already submitted attendance for this session.`)
+      return
+    }
+
     setSubmitting(true)
 
     const fingerprint = getFingerprint()
-    const ip = await getIP()
+    const ip = await getIP()          // stored for teacher reference, not used to block
 
     const { error } = await supabase.from('attendance').insert({
       session_id: sessionId,
@@ -161,9 +196,11 @@ export default function StudentForm() {
     })
 
     if (error) {
+      // Unique constraint violation – this student already exists in the DB
       if (error.code === '23505' || error.message.includes('unique')) {
-        setLocalBlock(sessionId)
-        setAppState('blocked')
+        setLocalBlock(sessionId, name)
+        alert(`"${name}" has already been recorded for this session.`)
+        setSubmitting(false)
         return
       }
       alert('Submission failed: ' + error.message)
@@ -171,10 +208,16 @@ export default function StudentForm() {
       return
     }
 
-    setLocalBlock(sessionId)
+    setLocalBlock(sessionId, name)
     setSuccessName(name)
     setSuccessTime(new Date().toLocaleTimeString())
     setAppState('success')
+  }
+
+  /* After success, allow another student to submit on the same device */
+  const handleAnotherStudent = () => {
+    setStudentName('')
+    setAppState('form')
   }
 
   return (
@@ -199,7 +242,7 @@ export default function StudentForm() {
               <div style={s.bannerName}>{sessionData?.name}</div>
             </div>
             <h1 style={s.h1}>Mark Your<br />Attendance</h1>
-            <p style={s.subtitle}>Enter your full name below. One submission per device.</p>
+            <p style={s.subtitle}>Enter your full name below to record your attendance.</p>
             <div style={{ marginBottom: 20 }}>
               <label style={s.label}>Full Name</label>
               <input
@@ -226,7 +269,7 @@ export default function StudentForm() {
               {submitting ? 'Submitting…' : 'Submit Attendance'}
             </button>
             <div style={s.note}>
-              🔒 Your submission is locked to this device and network. You cannot submit twice.
+              ✏️ Each student must enter their own name. Duplicate names for the same session will be rejected.
             </div>
           </>
         )}
@@ -243,24 +286,29 @@ export default function StudentForm() {
                 { label: 'Session', value: sessionData?.name ?? '' },
                 { label: 'Time', value: successTime },
               ].map((row, i, arr) => (
-                <div key={row.label} style={{ ...s.recordRow, borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none' }}>
+                <div
+                  key={row.label}
+                  style={{ ...s.recordRow, borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none' }}
+                >
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{row.label}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 500 }}>{row.value}</span>
                 </div>
               ))}
             </div>
-          </>
-        )}
 
-        {/* BLOCKED */}
-        {appState === 'blocked' && (
-          <>
-            <div style={s.stateIcon as React.CSSProperties}>🚫</div>
-            <div style={{ ...s.stateTitle, color: 'var(--accent2)' }}>Already Submitted</div>
-            <p style={s.stateSub}>
-              Attendance has already been marked from this device or network for this session.
-              <br /><br />Each student may only submit once.
-            </p>
+            {/* Let the next student use the same device */}
+            <button
+              style={{
+                ...s.btnSubmit,
+                marginTop: 20,
+                background: 'var(--surface2)',
+                color: 'var(--text)',
+                border: '1px solid var(--border)',
+              }}
+              onClick={handleAnotherStudent}
+            >
+              Another Student →
+            </button>
           </>
         )}
 

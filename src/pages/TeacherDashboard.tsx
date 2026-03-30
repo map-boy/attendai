@@ -1,651 +1,684 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { QRCodeSVG } from 'qrcode.react'
+import { QRCodeCanvas } from 'qrcode.react'
 import { supabase, Session, AttendanceRecord } from '../lib/supabase'
-import GlowBg from '../components/GlowBg'
 
-/* ─────────────────── CONFIG ─────────────────── */
-const TEACHER_PASSWORD = '@deeplearning2026'
-const TEACHER_NAME = 'Gasasira Felix'
+/*
+  INSTALL DEPENDENCY FIRST:
+  npm install qrcode.react
+*/
 
-/* ─────────────────── TYPES ─────────────────── */
-interface FailedLogin {
-  id: string
-  attempted_at: string
-  browser: string
-  ip_address: string
-  location: string
+// ── Excel/CSV download ──
+function downloadExcel(sessionName: string, records: AttendanceRecord[]) {
+  const headers = ['#', 'Student Name', 'Submitted At', 'IP Address', 'Device ID']
+  const rows = records.map((r, i) => [
+    i + 1,
+    r.student_name,
+    new Date(r.submitted_at).toLocaleString(),
+    r.ip_address,
+    r.device_fingerprint,
+  ])
+  const csv = [headers, ...rows]
+    .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+    .join('\n')
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${sessionName.replace(/\s+/g, '_')}_attendance.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
-/* ─────────────────── STYLES ─────────────────── */
-const s: Record<string, React.CSSProperties> = {
-  loginBox: {
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 20, padding: '48px 40px', width: '100%', maxWidth: 420,
-    animation: 'slideUp 0.5s ease', position: 'relative', zIndex: 10,
-  },
-  badge: {
-    display: 'inline-flex', alignItems: 'center', gap: 8,
-    background: 'rgba(124,108,252,0.15)', border: '1px solid rgba(124,108,252,0.3)',
-    borderRadius: 999, padding: '6px 14px', fontSize: 12, fontWeight: 600,
-    letterSpacing: '0.1em', color: 'var(--accent)', textTransform: 'uppercase', marginBottom: 24,
-  },
-  h1: { fontSize: 32, fontWeight: 800, lineHeight: 1.1, marginBottom: 8 },
-  sub: { color: 'var(--muted)', fontSize: 14, marginBottom: 32 },
-  label: {
-    display: 'block', fontSize: 12, fontWeight: 600, letterSpacing: '0.08em',
-    textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 8,
-  },
-  input: {
-    width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)',
-    borderRadius: 10, padding: '12px 16px', color: 'var(--text)',
-    fontFamily: 'var(--font-mono)', fontSize: 14, outline: 'none', boxSizing: 'border-box',
-  },
-  btnPrimary: {
-    width: '100%', background: 'var(--accent)', color: '#fff', border: 'none',
-    borderRadius: 10, padding: 14, fontFamily: 'var(--font-head)', fontSize: 15,
-    fontWeight: 700, cursor: 'pointer', marginTop: 8,
-  },
-  errBox: {
-    background: 'rgba(252,108,143,0.1)', border: '1px solid rgba(252,108,143,0.3)',
-    borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--accent2)', marginTop: 12,
-  },
-  topbar: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '20px 32px', borderBottom: '1px solid var(--border)',
-    background: 'rgba(10,10,15,0.8)', backdropFilter: 'blur(12px)',
-    position: 'sticky', top: 0, zIndex: 100, flexWrap: 'wrap', gap: 12,
-  },
-  logo: {
-    fontSize: 20, fontWeight: 800,
-    background: 'linear-gradient(135deg, var(--accent), var(--accent2))',
-    WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
-  },
-  btnLogout: {
-    background: 'transparent', border: '1px solid var(--border)', borderRadius: 8,
-    padding: '8px 16px', color: 'var(--muted)', fontFamily: 'var(--font-head)',
-    fontSize: 13, cursor: 'pointer',
-  },
-  main: { padding: 32, maxWidth: 1100, margin: '0 auto' },
-  sectionTitle: {
-    fontSize: 13, fontWeight: 700, letterSpacing: '0.12em',
-    textTransform: 'uppercase', color: 'var(--muted)', marginBottom: 16,
-  },
-  createCard: {
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 16, padding: 24, marginBottom: 32,
-  },
-  btnCreate: {
-    background: 'linear-gradient(135deg, var(--accent), #9c6cfc)',
-    color: '#fff', border: 'none', borderRadius: 10, padding: '12px 24px',
-    fontFamily: 'var(--font-head)', fontSize: 14, fontWeight: 700, cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
-  grid: {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-    gap: 20, marginBottom: 32,
-  },
-  noSessions: { textAlign: 'center', padding: '48px 32px', color: 'var(--muted)' },
-  spinner: {
-    width: 20, height: 20, border: '2px solid var(--border)',
-    borderTopColor: 'var(--accent)', borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite', display: 'inline-block',
-  },
-  overlay: {
-    position: 'fixed', inset: 0, zIndex: 200,
-    background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(6px)',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  modal: {
-    background: 'var(--surface)', border: '1px solid var(--border)',
-    borderRadius: 20, padding: 32, width: '90%', maxWidth: 480,
-    animation: 'slideUp 0.3s ease', position: 'relative',
-  },
-  modalClose: {
-    position: 'absolute', top: 16, right: 16,
-    background: 'var(--surface2)', border: '1px solid var(--border)',
-    borderRadius: 8, width: 32, height: 32, color: 'var(--muted)',
-    fontSize: 16, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-  },
-  qrWrap: {
-    background: '#fff', borderRadius: 12, padding: 16,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    margin: '0 auto 20px', width: 200, height: 200,
-  },
-  qrUrl: {
-    background: 'var(--surface2)', border: '1px solid var(--border)',
-    borderRadius: 8, padding: '10px 14px', fontFamily: 'var(--font-mono)',
-    fontSize: 11, color: 'var(--muted)', wordBreak: 'break-all', marginBottom: 12,
-  },
-  btnCopy: {
-    width: '100%', background: 'var(--surface2)', border: '1px solid var(--border)',
-    borderRadius: 8, padding: 10, color: 'var(--text)', fontFamily: 'var(--font-head)',
-    fontSize: 13, fontWeight: 600, cursor: 'pointer',
-  },
-  attScroll: { maxHeight: 360, overflowY: 'auto' },
-  table: { width: '100%', borderCollapse: 'collapse', fontSize: 13 },
-  th: {
-    textAlign: 'left', padding: '8px 12px', fontSize: 11,
-    letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--muted)',
-    borderBottom: '1px solid var(--border)',
-  },
-  td: { padding: '10px 12px', borderBottom: '1px solid rgba(42,42,58,0.5)' },
-  alertBanner: {
-    background: 'rgba(252,108,143,0.12)', borderBottom: '1px solid rgba(252,108,143,0.3)',
-    padding: '12px 32px', display: 'flex', alignItems: 'center',
-    justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
-  },
-  alertText: { fontSize: 13, color: 'var(--accent2)', fontWeight: 600 },
-  btnViewAlerts: {
-    background: 'rgba(252,108,143,0.15)', border: '1px solid rgba(252,108,143,0.3)',
-    borderRadius: 8, padding: '6px 14px', color: 'var(--accent2)',
-    fontFamily: 'var(--font-head)', fontSize: 12, fontWeight: 700, cursor: 'pointer',
-  },
-  teacherBadge: {
-    display: 'flex', alignItems: 'center', gap: 8,
-    background: 'rgba(124,108,252,0.12)', border: '1px solid rgba(124,108,252,0.25)',
-    borderRadius: 999, padding: '6px 14px',
-  },
-  teacherAvatar: {
-    width: 28, height: 28, borderRadius: '50%',
-    background: 'linear-gradient(135deg, var(--accent), var(--accent2))',
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    fontSize: 12, fontWeight: 800, color: '#fff', flexShrink: 0,
-  },
+// ── Download QR as PNG ──
+function downloadQR(sessionName: string, canvasId: string) {
+  const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null
+  if (!canvas) return
+  const url = canvas.toDataURL('image/png')
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${sessionName.replace(/\s+/g, '_')}_QR.png`
+  a.click()
 }
 
-/* ─────────────────── COMPONENT ─────────────────── */
+// ── Styles ──
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #111118;
+    --surface2: #1a1a24;
+    --border: rgba(255,255,255,0.07);
+    --border-hover: rgba(255,255,255,0.15);
+    --text: #f0f0f8;
+    --muted: #6b6b8a;
+    --accent: #7c6cfc;
+    --accent2: #fc6c8f;
+    --green: #4ade80;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --font: 'Syne', sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+
+  body { background: var(--bg); color: var(--text); font-family: var(--font); }
+
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.4 } }
+  @keyframes popIn {
+    from { opacity: 0; transform: scale(0.85); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  .dash { min-height: 100vh; padding: 0 0 80px; }
+
+  .header {
+    padding: 28px 40px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; background: rgba(10,10,15,0.88);
+    backdrop-filter: blur(14px); z-index: 100;
+  }
+  .logo {
+    font-size: 18px; font-weight: 800; letter-spacing: -0.03em;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .badge {
+    font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 20px;
+    background: rgba(124,108,252,0.12); color: var(--accent); border: 1px solid rgba(124,108,252,0.25);
+  }
+
+  .main { display: grid; grid-template-columns: 320px 1fr; min-height: calc(100vh - 77px); }
+
+  .sidebar {
+    border-right: 1px solid var(--border);
+    padding: 28px 20px;
+    display: flex; flex-direction: column; gap: 18px;
+    overflow-y: auto;
+  }
+  .sidebar-title {
+    font-size: 10px; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); padding: 0 4px;
+  }
+  .new-form { display: flex; flex-direction: column; gap: 9px; }
+  .new-form input {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 14px; color: var(--text);
+    font-family: var(--font); font-size: 13px; outline: none;
+    transition: border-color .2s, box-shadow .2s;
+  }
+  .new-form input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(124,108,252,0.15);
+  }
+  .btn-create {
+    background: linear-gradient(135deg, var(--accent), #9c6cfc);
+    color: #fff; border: none; border-radius: 10px; padding: 12px;
+    font-family: var(--font); font-size: 13px; font-weight: 700;
+    cursor: pointer; transition: opacity .2s;
+  }
+  .btn-create:hover { opacity: .85; }
+  .btn-create:disabled { opacity: .4; cursor: not-allowed; }
+
+  .session-list { display: flex; flex-direction: column; gap: 7px; }
+  .session-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 13px 15px; cursor: pointer;
+    transition: border-color .2s, background .2s;
+    animation: fadeUp .3s ease both;
+  }
+  .session-card:hover { border-color: var(--border-hover); background: var(--surface2); }
+  .session-card.active { border-color: var(--accent); background: rgba(124,108,252,0.07); }
+  .sc-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+  .sc-name { font-size: 13px; font-weight: 700; }
+  .sc-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green); box-shadow: 0 0 6px var(--green);
+    animation: pulse 2s ease-in-out infinite; flex-shrink: 0;
+  }
+  .sc-dot.closed { background: var(--muted); box-shadow: none; animation: none; }
+  .sc-meta { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  .detail { padding: 32px 40px; overflow-y: auto; }
+  .detail-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    margin-bottom: 24px; gap: 20px; flex-wrap: wrap;
+  }
+  .detail-title { font-size: 24px; font-weight: 800; letter-spacing: -.02em; margin-bottom: 5px; }
+  .detail-meta { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .detail-actions { display: flex; gap: 9px; flex-wrap: wrap; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 15px; border-radius: 10px; font-family: var(--font);
+    font-size: 12px; font-weight: 700; cursor: pointer; border: 1px solid transparent;
+    transition: opacity .2s;
+  }
+  .btn:hover { opacity: .8; }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-close  { background: rgba(251,191,36,0.1);  color: var(--yellow); border-color: rgba(251,191,36,0.25); }
+  .btn-open   { background: rgba(74,222,128,0.1);  color: var(--green);  border-color: rgba(74,222,128,0.25); }
+  .btn-dl     { background: rgba(124,108,252,0.1); color: var(--accent); border-color: rgba(124,108,252,0.25); }
+  .btn-delete { background: rgba(248,113,113,0.1); color: var(--red);    border-color: rgba(248,113,113,0.25); }
+  .btn-qr     { background: rgba(74,222,128,0.1);  color: var(--green);  border-color: rgba(74,222,128,0.25); }
+
+  /* ── QR + link panel ── */
+  .qr-link-row {
+    display: grid; grid-template-columns: auto 1fr; gap: 24px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; padding: 22px 26px; margin-bottom: 24px;
+    align-items: center;
+  }
+  .qr-block { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .qr-label {
+    font-size: 10px; font-weight: 700; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .qr-canvas-wrap {
+    background: #fff; border-radius: 12px; padding: 10px;
+    animation: popIn .4s cubic-bezier(0.34,1.56,0.64,1);
+    cursor: pointer; transition: transform .2s, box-shadow .2s;
+  }
+  .qr-canvas-wrap:hover {
+    transform: scale(1.04);
+    box-shadow: 0 0 0 4px rgba(124,108,252,0.3);
+  }
+  .qr-hint-small { font-size: 10px; color: var(--muted); text-align: center; }
+  .qr-download {
+    background: rgba(124,108,252,0.12); color: var(--accent);
+    border: 1px solid rgba(124,108,252,0.25); border-radius: 7px;
+    padding: 5px 12px; font-family: var(--font); font-size: 11px;
+    font-weight: 700; cursor: pointer; transition: opacity .2s;
+  }
+  .qr-download:hover { opacity: .75; }
+
+  .link-col { display: flex; flex-direction: column; gap: 10px; }
+  .link-col-title {
+    font-size: 10px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .link-url {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 9px; padding: 10px 14px;
+    font-family: var(--mono); font-size: 11px; color: var(--muted);
+    word-break: break-all; line-height: 1.5;
+  }
+  .btn-copy {
+    align-self: flex-start;
+    background: rgba(124,108,252,0.1); color: var(--accent);
+    border: 1px solid rgba(124,108,252,0.25); border-radius: 7px;
+    padding: 7px 14px; font-family: var(--font); font-size: 12px;
+    font-weight: 700; cursor: pointer; transition: opacity .2s;
+  }
+  .btn-copy:hover { opacity: .75; }
+  .qr-info {
+    font-size: 12px; color: var(--muted); line-height: 1.6;
+    background: rgba(74,222,128,0.05); border: 1px solid rgba(74,222,128,0.12);
+    border-radius: 8px; padding: 10px 14px;
+  }
+
+  .stats { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 20px; flex: 1; min-width: 110px;
+  }
+  .stat-val { font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
+  .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; margin-top: 3px; }
+
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 16px; overflow: hidden;
+  }
+  .table-head {
+    display: grid; grid-template-columns: 44px 1fr 160px 130px;
+    padding: 11px 20px; border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .table-row {
+    display: grid; grid-template-columns: 44px 1fr 160px 130px;
+    padding: 13px 20px; border-bottom: 1px solid var(--border);
+    font-size: 13px; align-items: center;
+    transition: background .15s; animation: fadeUp .2s ease both;
+  }
+  .table-row:last-child { border-bottom: none; }
+  .table-row:hover { background: var(--surface2); }
+  .row-num  { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .row-name { font-weight: 600; }
+  .row-time { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+  .row-ip   { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  .empty {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; padding: 60px 20px; color: var(--muted);
+    text-align: center; gap: 12px;
+  }
+  .empty-icon { font-size: 40px; }
+  .empty-text { font-size: 14px; }
+  .spinner {
+    width: 28px; height: 28px; border-radius: 50%;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    animation: spin .7s linear infinite;
+  }
+
+  /* ── QR fullscreen modal ── */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.82);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 999; backdrop-filter: blur(8px);
+  }
+  .qr-modal-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 24px; padding: 44px 40px; max-width: 420px; width: 92%;
+    text-align: center; animation: popIn .35s cubic-bezier(0.34,1.56,0.64,1);
+    display: flex; flex-direction: column; align-items: center; gap: 16px;
+  }
+  .qr-modal-title { font-size: 20px; font-weight: 800; }
+  .qr-modal-sub   { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  .qr-modal-canvas { background: #fff; border-radius: 16px; padding: 18px; }
+  .qr-modal-scan-hint {
+    font-size: 13px; color: var(--muted);
+    background: rgba(74,222,128,0.06); border: 1px solid rgba(74,222,128,0.14);
+    border-radius: 8px; padding: 10px 16px; line-height: 1.5;
+  }
+  .qr-modal-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+  /* ── delete confirm ── */
+  .confirm-box {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 20px; padding: 36px; max-width: 380px; width: 90%;
+    text-align: center; animation: fadeUp .25s ease;
+  }
+  .confirm-icon  { font-size: 44px; margin-bottom: 16px; }
+  .confirm-title { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
+  .confirm-sub   { font-size: 13px; color: var(--muted); margin-bottom: 28px; line-height: 1.6; }
+  .confirm-btns  { display: flex; gap: 10px; justify-content: center; }
+  .btn-cancel      { background: var(--surface2); color: var(--text); border: 1px solid var(--border); padding: 11px 22px; border-radius: 10px; font-family: var(--font); font-size: 14px; font-weight: 700; cursor: pointer; }
+  .btn-confirm-del { background: var(--red); color: #fff; border: none; padding: 11px 22px; border-radius: 10px; font-family: var(--font); font-size: 14px; font-weight: 700; cursor: pointer; }
+
+  .toast {
+    position: fixed; bottom: 28px; right: 28px; z-index: 9999;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px 20px;
+    font-size: 13px; font-weight: 600;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    animation: fadeUp .3s ease;
+  }
+  .toast.ok  { border-color: rgba(74,222,128,0.4); color: var(--green); }
+  .toast.err { border-color: rgba(248,113,113,0.4); color: var(--red); }
+
+  @media (max-width: 820px) {
+    .main { grid-template-columns: 1fr; }
+    .sidebar { border-right: none; border-bottom: 1px solid var(--border); max-height: 320px; }
+    .header { padding: 18px 20px; }
+    .detail { padding: 24px 20px; }
+    .qr-link-row { grid-template-columns: 1fr; justify-items: center; }
+    .link-col { width: 100%; }
+    .table-head, .table-row { grid-template-columns: 36px 1fr 140px; }
+    .row-ip { display: none; }
+  }
+`
+
+function Toast({ msg, type }: { msg: string; type: 'ok' | 'err' }) {
+  return <div className={`toast ${type}`}>{type === 'ok' ? '✓ ' : '✗ '}{msg}</div>
+}
+
 export default function TeacherDashboard() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [password, setPassword] = useState('')
-  const [loginErr, setLoginErr] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [loggingIn, setLoggingIn] = useState(false)
-
   const [sessions, setSessions] = useState<Session[]>([])
-  const [countMap, setCountMap] = useState<Record<string, number>>({})
-  const [newSessionName, setNewSessionName] = useState('')
+  const [selected, setSelected] = useState<Session | null>(null)
+  const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
+  const [loadingSessions, setLoadingSessions] = useState(true)
+  const [loadingAttendance, setLoadingAttendance] = useState(false)
+  const [newName, setNewName] = useState('')
+  const [createdBy, setCreatedBy] = useState('')
   const [creating, setCreating] = useState(false)
+  const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
+  const [confirmDelete, setConfirmDelete] = useState<Session | null>(null)
+  const [qrModal, setQrModal] = useState(false)
 
-  const [qrModal, setQrModal] = useState<{ id: string; name: string } | null>(null)
-  const [attModal, setAttModal] = useState<{ id: string; name: string } | null>(null)
-  const [attList, setAttList] = useState<AttendanceRecord[]>([])
-  const [attLoading, setAttLoading] = useState(false)
-  const [copied, setCopied] = useState(false)
+  const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => {
+    setToast({ msg, type })
+    setTimeout(() => setToast(null), 3000)
+  }
 
-  const [failedLogins, setFailedLogins] = useState<FailedLogin[]>([])
-  const [showFailedModal, setShowFailedModal] = useState(false)
-  const [newFailedCount, setNewFailedCount] = useState(0)
+  const sessionLink = (id: string) => `${window.location.origin}/attend?session=${id}`
 
-  const initials = TEACHER_NAME.split(' ').map(n => n[0]).join('').toUpperCase()
-
-  // ── Restore session on page load
-  useEffect(() => {
-    const saved = sessionStorage.getItem('teacher_auth')
-    if (saved === 'true') setIsLoggedIn(true)
+  const loadSessions = useCallback(async () => {
+    setLoadingSessions(true)
+    const { data, error } = await supabase
+      .from('sessions').select('*').order('created_at', { ascending: false })
+    if (!error && data) setSessions(data as Session[])
+    setLoadingSessions(false)
   }, [])
 
-  // ── Load failed logins
-  const loadFailedLogins = useCallback(async () => {
-    if (!isLoggedIn) return
-    const { data } = await supabase
-      .from('failed_logins')
-      .select('*')
-      .order('attempted_at', { ascending: false })
-      .limit(50)
-    if (data) {
-      setFailedLogins(prev => {
-        const newOnes = data.length - prev.length
-        if (newOnes > 0 && prev.length > 0) setNewFailedCount(c => c + newOnes)
-        return data as FailedLogin[]
-      })
-    }
-  }, [isLoggedIn])
-
-  useEffect(() => {
-    loadFailedLogins()
-    const interval = setInterval(loadFailedLogins, 30000)
-    return () => clearInterval(interval)
-  }, [loadFailedLogins])
-
-  // ── Realtime: new failed login
-  useEffect(() => {
-    if (!isLoggedIn) return
-    const channel = supabase
-      .channel('failed-logins-rt')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'failed_logins' }, (payload) => {
-        setFailedLogins(prev => [payload.new as FailedLogin, ...prev])
-        setNewFailedCount(c => c + 1)
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(channel) }
-  }, [isLoggedIn])
-
-  // ── Load sessions
-  const loadSessions = useCallback(async () => {
-    if (!isLoggedIn) return
-    const { data } = await supabase
-      .from('sessions')
-      .select('*')
-      .order('created_at', { ascending: false })
-    if (!data) return
-    setSessions(data as Session[])
-    if (data.length > 0) {
-      const ids = data.map(s => s.id)
-      const { data: counts } = await supabase
-        .from('attendance')
-        .select('session_id')
-        .in('session_id', ids)
-      const map: Record<string, number> = {}
-      ;(counts || []).forEach((r: { session_id: string }) => {
-        map[r.session_id] = (map[r.session_id] || 0) + 1
-      })
-      setCountMap(map)
-    }
-  }, [isLoggedIn])
+  const loadAttendance = useCallback(async (sessionId: string) => {
+    setLoadingAttendance(true)
+    const { data, error } = await supabase
+      .from('attendance').select('*')
+      .eq('session_id', sessionId)
+      .order('submitted_at', { ascending: true })
+    if (!error && data) setAttendance(data as AttendanceRecord[])
+    setLoadingAttendance(false)
+  }, [])
 
   useEffect(() => { loadSessions() }, [loadSessions])
 
-  // ── Realtime: new attendance
   useEffect(() => {
+    if (!selected) return
+    loadAttendance(selected.id)
     const channel = supabase
-      .channel('attendance-rt')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'attendance' }, () => {
-        loadSessions()
-        if (attModal) loadAttendance(attModal.id)
+      .channel(`attendance:${selected.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'attendance',
+        filter: `session_id=eq.${selected.id}`,
+      }, payload => {
+        setAttendance(prev => [...prev, payload.new as AttendanceRecord])
       })
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [loadSessions, attModal])
+  }, [selected, loadAttendance])
 
-  // ── Get device info for failed login logging
-  const getDeviceInfo = async () => {
-    const browser = navigator.userAgent
-    let ip = 'Unknown'
-    let location = 'Unknown'
-    try {
-      const res = await fetch('https://ipapi.co/json/')
-      const geo = await res.json()
-      ip = geo.ip || 'Unknown'
-      location = [geo.city, geo.region, geo.country_name].filter(Boolean).join(', ') || 'Unknown'
-    } catch { /* silent */ }
-    return { browser, ip, location }
-  }
-
-  // ── Login
-  const handleLogin = async () => {
-    setLoginErr('')
-    if (!password) { setLoginErr('Please enter the password.'); return }
-    setLoggingIn(true)
-    if (password === TEACHER_PASSWORD) {
-      sessionStorage.setItem('teacher_auth', 'true')
-      sessionStorage.setItem('teacher_name', TEACHER_NAME)
-      setIsLoggedIn(true)
-      setPassword('')
-    } else {
-      setLoginErr('❌ Incorrect password. This attempt has been logged.')
-      const { browser, ip, location } = await getDeviceInfo()
-      await supabase.from('failed_logins').insert({ browser, ip_address: ip, location })
-    }
-    setLoggingIn(false)
-  }
-
-  // ── Logout
-  const handleLogout = () => {
-    sessionStorage.removeItem('teacher_auth')
-    sessionStorage.removeItem('teacher_name')
-    setIsLoggedIn(false)
-    setSessions([])
-    setFailedLogins([])
-    setNewFailedCount(0)
-  }
-
-  // ── Create session
   const createSession = async () => {
-    if (!newSessionName.trim()) { alert('Enter a session name.'); return }
+    if (!newName.trim()) return
     setCreating(true)
-    await supabase.from('sessions').insert({
-      name: newSessionName.trim(),
-      is_active: true,
-    })
-    setNewSessionName('')
+    const { data, error } = await supabase
+      .from('sessions')
+      .insert({ name: newName.trim(), created_by: createdBy.trim() || 'Teacher' })
+      .select().single()
+    if (error) {
+      showToast('Failed to create session', 'err')
+    } else {
+      setSessions(prev => [data as Session, ...prev])
+      setSelected(data as Session)
+      setNewName('')
+      showToast('Session created!')
+    }
     setCreating(false)
-    loadSessions()
   }
 
-  // ── Close session
-  const closeSession = async (id: string) => {
-    if (!confirm('Close this session? Students will no longer be able to register.')) return
-    await supabase.from('sessions').update({ is_active: false }).eq('id', id)
-    loadSessions()
+  const toggleSession = async (session: Session) => {
+    const { error } = await supabase
+      .from('sessions').update({ is_active: !session.is_active }).eq('id', session.id)
+    if (error) { showToast('Update failed', 'err'); return }
+    const updated = { ...session, is_active: !session.is_active }
+    setSessions(prev => prev.map(s => s.id === session.id ? updated : s))
+    if (selected?.id === session.id) setSelected(updated)
+    showToast(updated.is_active ? 'Session opened' : 'Session closed')
   }
 
-  // ── Load attendance
-  const loadAttendance = async (sessionId: string) => {
-    setAttLoading(true)
-    const { data } = await supabase
-      .from('attendance')
-      .select('*')
-      .eq('session_id', sessionId)
-      .order('submitted_at', { ascending: true })
-    setAttList((data as AttendanceRecord[]) || [])
-    setAttLoading(false)
+  const deleteSession = async (session: Session) => {
+    const { error } = await supabase.from('sessions').delete().eq('id', session.id)
+    if (error) { showToast('Delete failed', 'err'); setConfirmDelete(null); return }
+    setSessions(prev => prev.filter(s => s.id !== session.id))
+    if (selected?.id === session.id) { setSelected(null); setAttendance([]) }
+    setConfirmDelete(null)
+    showToast('Session deleted')
   }
 
-  const openAttModal = (id: string, name: string) => {
-    setAttModal({ id, name })
-    loadAttendance(id)
-  }
+  return (
+    <>
+      <style>{css}</style>
+      <div className="dash">
 
-  const studentUrl = (sessionId: string) =>
-    `${window.location.origin}/student?session=${sessionId}`
+        {/* Header */}
+        <header className="header">
+          <div className="logo">AttendAI</div>
+          <span className="badge">Teacher Dashboard</span>
+        </header>
 
-  const copyUrl = (sessionId: string) => {
-    navigator.clipboard.writeText(studentUrl(sessionId))
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+        <div className="main">
 
-  /* ── LOGIN SCREEN ── */
-  if (!isLoggedIn) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <GlowBg />
-        <div style={s.loginBox}>
-          <div style={s.badge}>🎓 Teacher Portal</div>
-          <h1 style={s.h1}>Welcome back,<br />{TEACHER_NAME}.</h1>
-          <p style={s.sub}>Enter the teacher password to access your dashboard.</p>
-
-          <div style={{ marginBottom: 20 }}>
-            <label style={s.label}>Password</label>
-            <div style={{ position: 'relative' }}>
+          {/* Sidebar */}
+          <aside className="sidebar">
+            <div className="sidebar-title">New Session</div>
+            <div className="new-form">
               <input
-                style={{ ...s.input, paddingRight: 48 }}
-                type={showPassword ? 'text' : 'password'}
-                placeholder="••••••••"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && handleLogin()}
-                autoFocus
+                placeholder="Session name (e.g. Math – Week 3)"
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && createSession()}
               />
-              <button
-                onClick={() => setShowPassword(p => !p)}
-                style={{
-                  position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
-                  background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16,
-                }}>
-                {showPassword ? '🙈' : '👁️'}
+              <input
+                placeholder="Your name (optional)"
+                value={createdBy}
+                onChange={e => setCreatedBy(e.target.value)}
+              />
+              <button className="btn-create" onClick={createSession} disabled={creating || !newName.trim()}>
+                {creating ? 'Creating…' : '+ Create Session'}
               </button>
             </div>
-          </div>
 
-          <button
-            style={{ ...s.btnPrimary, opacity: loggingIn ? 0.6 : 1 }}
-            onClick={handleLogin}
-            disabled={loggingIn}>
-            {loggingIn ? 'Signing in…' : 'Sign In →'}
-          </button>
-
-          {loginErr && <div style={s.errBox}>{loginErr}</div>}
-
-          <p style={{ marginTop: 20, fontSize: 11, color: 'var(--muted)', textAlign: 'center' }}>
-            ⚠️ Failed login attempts are logged with device info &amp; location.
-          </p>
-        </div>
-      </div>
-    )
-  }
-
-  /* ── DASHBOARD ── */
-  return (
-    <div style={{ minHeight: '100vh' }}>
-      <GlowBg />
-
-      {/* Failed Login Alert Banner */}
-      {failedLogins.length > 0 && (
-        <div style={s.alertBanner}>
-          <span style={s.alertText}>
-            🚨 {newFailedCount > 0 ? `${newFailedCount} new` : failedLogins.length} failed login attempt{failedLogins.length !== 1 ? 's' : ''} detected
-          </span>
-          <button style={s.btnViewAlerts} onClick={() => { setShowFailedModal(true); setNewFailedCount(0) }}>
-            View Details
-          </button>
-        </div>
-      )}
-
-      {/* Topbar */}
-      <div style={s.topbar}>
-        <div style={s.logo}>AttendAI</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={s.teacherBadge}>
-            <div style={s.teacherAvatar}>{initials}</div>
-            <span style={{ color: 'var(--text)', fontWeight: 600, fontSize: 13 }}>{TEACHER_NAME}</span>
-          </div>
-          <button style={s.btnLogout} onClick={handleLogout}>Sign Out</button>
-        </div>
-      </div>
-
-      <div style={s.main}>
-        {/* Create Session */}
-        <div style={s.sectionTitle as React.CSSProperties}>New Session</div>
-        <div style={s.createCard}>
-          <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-            <div style={{ flex: 1 }}>
-              <label style={s.label}>Session Name</label>
-              <input style={s.input} type="text"
-                placeholder="e.g. CS101 — Week 5 Lecture"
-                value={newSessionName}
-                onChange={e => setNewSessionName(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && createSession()} />
+            <div className="sidebar-title" style={{ marginTop: 4 }}>
+              Sessions ({sessions.length})
             </div>
-            <button style={{ ...s.btnCreate, opacity: creating ? 0.5 : 1 }}
-              onClick={createSession} disabled={creating}>
-              {creating ? 'Creating…' : '+ Create Session'}
-            </button>
-          </div>
-        </div>
 
-        {/* Sessions Grid */}
-        <div style={s.sectionTitle as React.CSSProperties}>Your Sessions</div>
-        {sessions.length === 0 ? (
-          <div style={s.noSessions}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>📋</div>
-            <h3 style={{ fontSize: 18, color: 'var(--text)', marginBottom: 8 }}>No sessions yet</h3>
-            <p>Create your first session above to get started.</p>
-          </div>
-        ) : (
-          <div style={s.grid}>
-            {sessions.map(session => (
-              <SessionCard
-                key={session.id}
-                session={session}
-                count={countMap[session.id] || 0}
-                onShowQR={() => setQrModal({ id: session.id, name: session.name })}
-                onViewList={() => openAttModal(session.id, session.name)}
-                onClose={() => closeSession(session.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* QR Modal */}
-      {qrModal && (
-        <div style={s.overlay} onClick={e => e.target === e.currentTarget && setQrModal(null)}>
-          <div style={s.modal}>
-            <button style={s.modalClose} onClick={() => setQrModal(null)}>✕</button>
-            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Scan to Attend</h2>
-            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 24 }}>{qrModal.name}</p>
-            <div style={s.qrWrap}>
-              <QRCodeSVG value={studentUrl(qrModal.id)} size={168} level="H" />
-            </div>
-            <div style={s.qrUrl}>{studentUrl(qrModal.id)}</div>
-            <button style={s.btnCopy} onClick={() => copyUrl(qrModal.id)}>
-              {copied ? '✅ Copied!' : '📋 Copy Link'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Attendance Modal */}
-      {attModal && (
-        <div style={s.overlay} onClick={e => e.target === e.currentTarget && setAttModal(null)}>
-          <div style={{ ...s.modal, maxWidth: 560 }}>
-            <button style={s.modalClose} onClick={() => setAttModal(null)}>✕</button>
-            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Attendance List</h2>
-            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 24 }}>{attModal.name}</p>
-            <div style={s.attScroll}>
-              {attLoading ? (
-                <div style={{ textAlign: 'center', padding: 32 }}><div style={s.spinner} /></div>
-              ) : attList.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 32, color: 'var(--muted)', fontSize: 14 }}>
-                  No students have registered yet.
+            <div className="session-list">
+              {loadingSessions ? (
+                <div className="empty"><div className="spinner" /></div>
+              ) : sessions.length === 0 ? (
+                <div className="empty">
+                  <div className="empty-icon">📋</div>
+                  <div className="empty-text">No sessions yet</div>
                 </div>
-              ) : (
-                <table style={s.table}>
-                  <thead>
-                    <tr>
-                      <th style={s.th}>#</th>
-                      <th style={s.th}>Student Name</th>
-                      <th style={s.th}>Time</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attList.map((r, i) => (
-                      <tr key={r.id}>
-                        <td style={{ ...s.td, color: 'var(--muted)' }}>{i + 1}</td>
-                        <td style={{ ...s.td, fontWeight: 600 }}>{r.student_name}</td>
-                        <td style={{ ...s.td, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--muted)' }}>
-                          {new Date(r.submitted_at).toLocaleTimeString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Failed Logins Modal */}
-      {showFailedModal && (
-        <div style={s.overlay} onClick={e => e.target === e.currentTarget && setShowFailedModal(false)}>
-          <div style={{ ...s.modal, maxWidth: 680 }}>
-            <button style={s.modalClose} onClick={() => setShowFailedModal(false)}>✕</button>
-            <h2 style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>🚨 Failed Login Attempts</h2>
-            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 24 }}>
-              Someone tried to access the teacher dashboard with the wrong password.
-            </p>
-            <div style={s.attScroll}>
-              {failedLogins.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 32, color: 'var(--muted)', fontSize: 14 }}>
-                  No failed attempts recorded.
+              ) : sessions.map((s, i) => (
+                <div
+                  key={s.id}
+                  className={`session-card ${selected?.id === s.id ? 'active' : ''}`}
+                  style={{ animationDelay: `${i * 40}ms` }}
+                  onClick={() => setSelected(s)}
+                >
+                  <div className="sc-top">
+                    <div className="sc-name">{s.name}</div>
+                    <div className={`sc-dot ${s.is_active ? '' : 'closed'}`} />
+                  </div>
+                  <div className="sc-meta">
+                    {s.is_active ? 'Active' : 'Closed'} · {new Date(s.created_at).toLocaleDateString()}
+                  </div>
                 </div>
-              ) : (
-                <table style={s.table}>
-                  <thead>
-                    <tr>
-                      <th style={s.th}>Time</th>
-                      <th style={s.th}>IP Address</th>
-                      <th style={s.th}>Location</th>
-                      <th style={s.th}>Device / Browser</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {failedLogins.map(f => (
-                      <tr key={f.id}>
-                        <td style={{ ...s.td, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
-                          {new Date(f.attempted_at).toLocaleString()}
-                        </td>
-                        <td style={{ ...s.td, fontFamily: 'var(--font-mono)', fontSize: 12 }}>{f.ip_address}</td>
-                        <td style={{ ...s.td, fontSize: 12 }}>{f.location}</td>
-                        <td style={{ ...s.td, fontSize: 11, color: 'var(--muted)', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {f.browser}
-                        </td>
-                      </tr>
+              ))}
+            </div>
+          </aside>
+
+          {/* Detail Pane */}
+          <main className="detail">
+            {!selected ? (
+              <div className="empty" style={{ paddingTop: 100 }}>
+                <div className="empty-icon">👈</div>
+                <div className="empty-text">Select or create a session to get started</div>
+              </div>
+            ) : (
+              <>
+                {/* Header */}
+                <div className="detail-header">
+                  <div>
+                    <div className="detail-title">{selected.name}</div>
+                    <div className="detail-meta">
+                      Created by {selected.created_by} · {new Date(selected.created_at).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="detail-actions">
+                    <button
+                      className={`btn ${selected.is_active ? 'btn-close' : 'btn-open'}`}
+                      onClick={() => toggleSession(selected)}
+                    >
+                      {selected.is_active ? '🔒 Close' : '🔓 Open'}
+                    </button>
+                    <button className="btn btn-qr" onClick={() => setQrModal(true)}>
+                      📲 Full QR
+                    </button>
+                    <button
+                      className="btn btn-dl"
+                      onClick={() => downloadExcel(selected.name, attendance)}
+                      disabled={attendance.length === 0}
+                    >
+                      ⬇ Excel
+                    </button>
+                    <button className="btn btn-delete" onClick={() => setConfirmDelete(selected)}>
+                      🗑 Delete
+                    </button>
+                  </div>
+                </div>
+
+                {/* QR + Link panel */}
+                <div className="qr-link-row">
+                  <div className="qr-block">
+                    <div className="qr-label">Scan to Attend</div>
+                    {/* clicking the inline QR opens the fullscreen modal */}
+                    <div className="qr-canvas-wrap" onClick={() => setQrModal(true)} title="Click to enlarge">
+                      <QRCodeCanvas
+                        id={`qr-inline-${selected.id}`}
+                        value={sessionLink(selected.id)}
+                        size={130}
+                        bgColor="#ffffff"
+                        fgColor="#0a0a0f"
+                        level="M"
+                      />
+                    </div>
+                    <div className="qr-hint-small">Click to enlarge</div>
+                    <button
+                      className="qr-download"
+                      onClick={() => downloadQR(selected.name, `qr-inline-${selected.id}`)}
+                    >
+                      ⬇ Download PNG
+                    </button>
+                  </div>
+
+                  <div className="link-col">
+                    <div className="link-col-title">Attendance Link</div>
+                    <div className="link-url">{sessionLink(selected.id)}</div>
+                    <button
+                      className="btn-copy"
+                      onClick={() => {
+                        navigator.clipboard.writeText(sessionLink(selected.id))
+                        showToast('Link copied!')
+                      }}
+                    >
+                      📋 Copy Link
+                    </button>
+                    <div className="qr-info">
+                      📲 Show this QR on your projector or screen. Students scan it with their phone camera — no app needed. The form opens instantly.
+                    </div>
+                  </div>
+                </div>
+
+                {/* Stats */}
+                <div className="stats">
+                  <div className="stat-box">
+                    <div className="stat-val" style={{ color: 'var(--accent)' }}>{attendance.length}</div>
+                    <div className="stat-lbl">Students Present</div>
+                  </div>
+                  <div className="stat-box">
+                    <div className="stat-val" style={{ color: selected.is_active ? 'var(--green)' : 'var(--muted)' }}>
+                      {selected.is_active ? 'Open' : 'Closed'}
+                    </div>
+                    <div className="stat-lbl">Session Status</div>
+                  </div>
+                  {attendance.length > 0 && (
+                    <div className="stat-box">
+                      <div className="stat-val" style={{ color: 'var(--yellow)', fontSize: 15, paddingTop: 7 }}>
+                        {new Date(attendance[attendance.length - 1].submitted_at).toLocaleTimeString()}
+                      </div>
+                      <div className="stat-lbl">Last Submission</div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Attendance table */}
+                {loadingAttendance ? (
+                  <div className="empty"><div className="spinner" /></div>
+                ) : attendance.length === 0 ? (
+                  <div className="empty">
+                    <div className="empty-icon">🎓</div>
+                    <div className="empty-text">No submissions yet — show the QR above to students.</div>
+                  </div>
+                ) : (
+                  <div className="table-wrap">
+                    <div className="table-head">
+                      <div>#</div><div>Student Name</div><div>Time</div><div>IP Address</div>
+                    </div>
+                    {attendance.map((r, i) => (
+                      <div className="table-row" key={r.id} style={{ animationDelay: `${i * 25}ms` }}>
+                        <div className="row-num">{i + 1}</div>
+                        <div className="row-name">{r.student_name}</div>
+                        <div className="row-time">{new Date(r.submitted_at).toLocaleTimeString()}</div>
+                        <div className="row-ip">{r.ip_address}</div>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
-              )}
+                  </div>
+                )}
+              </>
+            )}
+          </main>
+        </div>
+
+        {/* ── QR Fullscreen Modal ── */}
+        {qrModal && selected && (
+          <div className="overlay" onClick={() => setQrModal(false)}>
+            <div className="qr-modal-box" onClick={e => e.stopPropagation()}>
+              <div className="qr-modal-title">{selected.name}</div>
+              <div className="qr-modal-sub">Point your phone camera at the code below</div>
+              <div className="qr-modal-canvas">
+                <QRCodeCanvas
+                  id={`qr-modal-${selected.id}`}
+                  value={sessionLink(selected.id)}
+                  size={270}
+                  bgColor="#ffffff"
+                  fgColor="#0a0a0f"
+                  level="M"
+                />
+              </div>
+              <div className="qr-modal-scan-hint">
+                📱 Works with any phone camera app — no QR scanner needed.<br />
+                The attendance form opens automatically.
+              </div>
+              <div className="qr-modal-actions">
+                <button
+                  className="btn btn-dl"
+                  onClick={() => { downloadQR(selected.name, `qr-modal-${selected.id}`); showToast('QR downloaded!') }}
+                >
+                  ⬇ Download PNG
+                </button>
+                <button
+                  className="btn"
+                  style={{ background: 'var(--surface2)', color: 'var(--muted)', borderColor: 'var(--border)' }}
+                  onClick={() => setQrModal(false)}
+                >
+                  ✕ Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-/* ── Session Card ── */
-interface SessionCardProps {
-  session: Session
-  count: number
-  onShowQR: () => void
-  onViewList: () => void
-  onClose: () => void
-}
-
-function SessionCard({ session, count, onShowQR, onViewList, onClose }: SessionCardProps) {
-  const date = new Date(session.created_at).toLocaleString()
-  return (
-    <div style={{
-      background: 'var(--surface)', borderRadius: 16, padding: 20,
-      animation: 'fadeIn 0.3s ease',
-      border: `1px solid ${session.is_active ? 'rgba(124,108,252,0.5)' : 'var(--border)'}`,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
-        <div>
-          <div style={{ fontSize: 18, fontWeight: 700 }}>{session.name}</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>{date}</div>
-        </div>
-        <StatusDot active={session.is_active} />
-      </div>
-
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
-        <div style={{ background: 'var(--surface2)', borderRadius: 8, padding: '8px 12px', flex: 1, textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--accent)' }}>{count}</div>
-          <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Students</div>
-        </div>
-      </div>
-
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {session.is_active && (
-          <button onClick={onShowQR} style={{
-            borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12,
-            fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(124,108,252,0.3)',
-            background: 'rgba(124,108,252,0.15)', color: 'var(--accent)',
-          }}>📱 Show QR</button>
         )}
-        <button onClick={onViewList} style={{
-          borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12,
-          fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(74,222,128,0.25)',
-          background: 'rgba(74,222,128,0.1)', color: 'var(--green)',
-        }}>📋 View List</button>
-        {session.is_active && (
-          <button onClick={onClose} style={{
-            borderRadius: 8, padding: '8px 14px', fontFamily: 'var(--font-head)', fontSize: 12,
-            fontWeight: 700, cursor: 'pointer', border: '1px solid rgba(252,108,143,0.25)',
-            background: 'rgba(252,108,143,0.1)', color: 'var(--accent2)',
-          }}>🔒 Close</button>
-        )}
-      </div>
-    </div>
-  )
-}
 
-function StatusDot({ active }: { active: boolean }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600,
-      padding: '4px 10px', borderRadius: 999,
-      background: active ? 'rgba(74,222,128,0.15)' : 'rgba(107,107,138,0.15)',
-      color: active ? 'var(--green)' : 'var(--muted)',
-    }}>
-      <span style={{
-        width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
-        background: active ? 'var(--green)' : 'var(--muted)',
-        animation: active ? 'pulse 1.5s infinite' : 'none',
-      }} />
-      {active ? 'Live' : 'Closed'}
-    </div>
+        {/* ── Delete Confirm ── */}
+        {confirmDelete && (
+          <div className="overlay" onClick={() => setConfirmDelete(null)}>
+            <div className="confirm-box" onClick={e => e.stopPropagation()}>
+              <div className="confirm-icon">🗑</div>
+              <div className="confirm-title">Delete Session?</div>
+              <div className="confirm-sub">
+                "<strong>{confirmDelete.name}</strong>" and all {attendance.length} attendance
+                record{attendance.length !== 1 ? 's' : ''} will be permanently deleted. This cannot be undone.
+              </div>
+              <div className="confirm-btns">
+                <button className="btn-cancel" onClick={() => setConfirmDelete(null)}>Cancel</button>
+                <button className="btn-confirm-del" onClick={() => deleteSession(confirmDelete)}>Delete</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Toast ── */}
+        {toast && <Toast msg={toast.msg} type={toast.type} />}
+      </div>
+    </>
   )
 }
