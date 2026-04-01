@@ -30,6 +30,26 @@ function downloadExcel(sessionName: string, records: AttendanceRecord[]) {
   URL.revokeObjectURL(url)
 }
 
+// ── Download a photo via blob (works for cross-origin Supabase URLs) ──
+async function downloadPhoto(url: string, studentName: string) {
+  try {
+    const res = await fetch(url)
+    const blob = await res.blob()
+    const ext = blob.type.split('/')[1] ?? 'jpg'
+    const objectUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = objectUrl
+    a.download = `${studentName.replace(/\s+/g, '_')}_photo.${ext}`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(objectUrl)
+  } catch {
+    // Fallback: open in new tab
+    window.open(url, '_blank')
+  }
+}
+
 // ── Download QR as PNG ──
 function downloadQR(sessionName: string, canvasId: string) {
   const canvas = document.getElementById(canvasId) as HTMLCanvasElement | null
@@ -396,16 +416,12 @@ function PhotoLightbox({ url, name, onClose }: { url: string; name: string; onCl
     <div className="photo-lightbox" onClick={onClose}>
       <img src={url} alt={name} onClick={e => e.stopPropagation()} />
       <button className="lightbox-close" onClick={onClose}>✕</button>
-      <a
+      <button
         className="lightbox-dl"
-        href={url}
-        download
-        target="_blank"
-        rel="noreferrer"
-        onClick={e => e.stopPropagation()}
+        onClick={e => { e.stopPropagation(); downloadPhoto(url, name) }}
       >
         ⬇ Download Photo
-      </a>
+      </button>
     </div>
   )
 }
@@ -720,16 +736,13 @@ export default function TeacherDashboard() {
                         <div className="row-name">
                           {r.student_name}
                           {r.photo_url && (
-                            <a
+                            <button
                               className="btn-dl-photo"
-                              href={r.photo_url}
-                              download
-                              target="_blank"
-                              rel="noreferrer"
+                              onClick={() => downloadPhoto(r.photo_url!, r.student_name)}
                               style={{ marginLeft: 8 }}
                             >
                               ⬇ Photo
-                            </a>
+                            </button>
                           )}
                         </div>
 

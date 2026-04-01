@@ -322,14 +322,13 @@ export default function StudentForm() {
                   onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
                   onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
                 >
-                  <div style={{ fontSize: 28, marginBottom: 6 }}>📷</div>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>Tap to add a photo</div>
-                  <div style={{ fontSize: 11 }}>JPG, PNG, WEBP · max 5 MB</div>
+                  <div style={{ fontSize: 28, marginBottom: 6 }}>🖼️</div>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>Tap to choose from your photos</div>
+                  <div style={{ fontSize: 11 }}>Pick from gallery or take a new photo · JPG, PNG, WEBP · max 5 MB</div>
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="image/*"
-                    capture="environment"
                     style={{ display: 'none' }}
                     onChange={handlePhotoChange}
                   />
