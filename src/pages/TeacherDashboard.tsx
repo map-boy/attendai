@@ -7,15 +7,16 @@ import { supabase, Session, AttendanceRecord } from '../lib/supabase'
   npm install qrcode.react
 */
 
-// ── Excel/CSV download ──
+// ── Excel/CSV download (now includes Photo URL column) ──
 function downloadExcel(sessionName: string, records: AttendanceRecord[]) {
-  const headers = ['#', 'Student Name', 'Submitted At', 'IP Address', 'Device ID']
+  const headers = ['#', 'Student Name', 'Submitted At', 'IP Address', 'Device ID', 'Photo URL']
   const rows = records.map((r, i) => [
     i + 1,
     r.student_name,
     new Date(r.submitted_at).toLocaleString(),
     r.ip_address,
     r.device_fingerprint,
+    r.photo_url ?? '',
   ])
   const csv = [headers, ...rows]
     .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
@@ -233,28 +234,56 @@ const css = `
   .stat-val { font-size: 26px; font-weight: 800; letter-spacing: -.03em; }
   .stat-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; margin-top: 3px; }
 
+  /* ── Attendance table with photo column ── */
   .table-wrap {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 16px; overflow: hidden;
   }
   .table-head {
-    display: grid; grid-template-columns: 44px 1fr 160px 130px;
+    display: grid; grid-template-columns: 44px 56px 1fr 150px 110px;
     padding: 11px 20px; border-bottom: 1px solid var(--border);
     font-size: 10px; font-weight: 700; letter-spacing: .12em;
     text-transform: uppercase; color: var(--muted);
   }
   .table-row {
-    display: grid; grid-template-columns: 44px 1fr 160px 130px;
-    padding: 13px 20px; border-bottom: 1px solid var(--border);
+    display: grid; grid-template-columns: 44px 56px 1fr 150px 110px;
+    padding: 10px 20px; border-bottom: 1px solid var(--border);
     font-size: 13px; align-items: center;
     transition: background .15s; animation: fadeUp .2s ease both;
   }
   .table-row:last-child { border-bottom: none; }
   .table-row:hover { background: var(--surface2); }
   .row-num  { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .row-photo { display: flex; align-items: center; }
   .row-name { font-weight: 600; }
   .row-time { font-family: var(--mono); font-size: 11px; color: var(--muted); }
   .row-ip   { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+  /* Photo thumbnail */
+  .photo-thumb {
+    width: 36px; height: 36px; border-radius: 8px; object-fit: cover;
+    border: 1px solid var(--border); cursor: zoom-in;
+    transition: transform .15s, box-shadow .15s;
+  }
+  .photo-thumb:hover {
+    transform: scale(1.1);
+    box-shadow: 0 0 0 3px rgba(124,108,252,0.35);
+  }
+  .no-photo {
+    width: 36px; height: 36px; border-radius: 8px;
+    background: var(--surface2); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; color: var(--muted);
+  }
+  .btn-dl-photo {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: rgba(74,222,128,0.08); color: var(--green);
+    border: 1px solid rgba(74,222,128,0.22); border-radius: 6px;
+    padding: 4px 9px; font-family: var(--font); font-size: 11px;
+    font-weight: 700; cursor: pointer; text-decoration: none;
+    transition: opacity .2s;
+  }
+  .btn-dl-photo:hover { opacity: .75; }
 
   .empty {
     display: flex; flex-direction: column; align-items: center;
@@ -291,6 +320,36 @@ const css = `
   }
   .qr-modal-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
 
+  /* ── Photo lightbox ── */
+  .photo-lightbox {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.92);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1100; backdrop-filter: blur(10px);
+    cursor: zoom-out;
+  }
+  .photo-lightbox img {
+    max-width: 90vw; max-height: 85vh;
+    border-radius: 14px; object-fit: contain;
+    box-shadow: 0 12px 60px rgba(0,0,0,0.7);
+    animation: popIn .25s ease;
+    cursor: default;
+  }
+  .lightbox-close {
+    position: absolute; top: 20px; right: 24px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 8px; width: 36px; height: 36px; color: var(--text);
+    font-size: 18px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .lightbox-dl {
+    position: absolute; bottom: 24px;
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 10px; padding: 10px 20px;
+    font-family: var(--font); font-size: 13px; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; gap: 6px;
+    text-decoration: none;
+  }
+
   /* ── delete confirm ── */
   .confirm-box {
     background: var(--surface); border: 1px solid var(--border);
@@ -322,13 +381,33 @@ const css = `
     .detail { padding: 24px 20px; }
     .qr-link-row { grid-template-columns: 1fr; justify-items: center; }
     .link-col { width: 100%; }
-    .table-head, .table-row { grid-template-columns: 36px 1fr 140px; }
+    .table-head, .table-row { grid-template-columns: 36px 44px 1fr 130px; }
     .row-ip { display: none; }
   }
 `
 
 function Toast({ msg, type }: { msg: string; type: 'ok' | 'err' }) {
   return <div className={`toast ${type}`}>{type === 'ok' ? '✓ ' : '✗ '}{msg}</div>
+}
+
+/* ── Photo Lightbox ── */
+function PhotoLightbox({ url, name, onClose }: { url: string; name: string; onClose: () => void }) {
+  return (
+    <div className="photo-lightbox" onClick={onClose}>
+      <img src={url} alt={name} onClick={e => e.stopPropagation()} />
+      <button className="lightbox-close" onClick={onClose}>✕</button>
+      <a
+        className="lightbox-dl"
+        href={url}
+        download
+        target="_blank"
+        rel="noreferrer"
+        onClick={e => e.stopPropagation()}
+      >
+        ⬇ Download Photo
+      </a>
+    </div>
+  )
 }
 
 export default function TeacherDashboard() {
@@ -343,6 +422,9 @@ export default function TeacherDashboard() {
   const [toast, setToast] = useState<{ msg: string; type: 'ok' | 'err' } | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<Session | null>(null)
   const [qrModal, setQrModal] = useState(false)
+
+  // ── Photo lightbox state
+  const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null)
 
   const showToast = (msg: string, type: 'ok' | 'err' = 'ok') => {
     setToast({ msg, type })
@@ -422,6 +504,9 @@ export default function TeacherDashboard() {
     setConfirmDelete(null)
     showToast('Session deleted')
   }
+
+  // ── Photo count badge
+  const photoCount = attendance.filter(r => r.photo_url).length
 
   return (
     <>
@@ -531,7 +616,6 @@ export default function TeacherDashboard() {
                 <div className="qr-link-row">
                   <div className="qr-block">
                     <div className="qr-label">Scan to Attend</div>
-                    {/* clicking the inline QR opens the fullscreen modal */}
                     <div className="qr-canvas-wrap" onClick={() => setQrModal(true)} title="Click to enlarge">
                       <QRCodeCanvas
                         id={`qr-inline-${selected.id}`}
@@ -581,6 +665,12 @@ export default function TeacherDashboard() {
                     </div>
                     <div className="stat-lbl">Session Status</div>
                   </div>
+                  {photoCount > 0 && (
+                    <div className="stat-box">
+                      <div className="stat-val" style={{ color: 'var(--accent)', fontSize: 22 }}>📷 {photoCount}</div>
+                      <div className="stat-lbl">Photos Submitted</div>
+                    </div>
+                  )}
                   {attendance.length > 0 && (
                     <div className="stat-box">
                       <div className="stat-val" style={{ color: 'var(--yellow)', fontSize: 15, paddingTop: 7 }}>
@@ -602,12 +692,47 @@ export default function TeacherDashboard() {
                 ) : (
                   <div className="table-wrap">
                     <div className="table-head">
-                      <div>#</div><div>Student Name</div><div>Time</div><div>IP Address</div>
+                      <div>#</div>
+                      <div>Photo</div>
+                      <div>Student Name</div>
+                      <div>Time</div>
+                      <div>IP Address</div>
                     </div>
                     {attendance.map((r, i) => (
                       <div className="table-row" key={r.id} style={{ animationDelay: `${i * 25}ms` }}>
                         <div className="row-num">{i + 1}</div>
-                        <div className="row-name">{r.student_name}</div>
+
+                        {/* ── Photo cell ── */}
+                        <div className="row-photo">
+                          {r.photo_url ? (
+                            <img
+                              className="photo-thumb"
+                              src={r.photo_url}
+                              alt={r.student_name}
+                              title="Click to enlarge"
+                              onClick={() => setLightbox({ url: r.photo_url!, name: r.student_name })}
+                            />
+                          ) : (
+                            <div className="no-photo" title="No photo">—</div>
+                          )}
+                        </div>
+
+                        <div className="row-name">
+                          {r.student_name}
+                          {r.photo_url && (
+                            <a
+                              className="btn-dl-photo"
+                              href={r.photo_url}
+                              download
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ marginLeft: 8 }}
+                            >
+                              ⬇ Photo
+                            </a>
+                          )}
+                        </div>
+
                         <div className="row-time">{new Date(r.submitted_at).toLocaleTimeString()}</div>
                         <div className="row-ip">{r.ip_address}</div>
                       </div>
@@ -656,6 +781,15 @@ export default function TeacherDashboard() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* ── Photo Lightbox ── */}
+        {lightbox && (
+          <PhotoLightbox
+            url={lightbox.url}
+            name={lightbox.name}
+            onClose={() => setLightbox(null)}
+          />
         )}
 
         {/* ── Delete Confirm ── */}
