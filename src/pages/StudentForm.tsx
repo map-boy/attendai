@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { supabase, Session } from '../lib/supabase'
 import GlowBg from '../components/GlowBg'
@@ -80,7 +80,7 @@ const s: Record<string, React.CSSProperties> = {
   },
 }
 
-/* ── Device fingerprint ── */
+/* ── Device fingerprint (unchanged) ── */
 function getBrowserToken(): string {
   const key = '__attend_browser_token__'
   let token = localStorage.getItem(key)
@@ -131,18 +131,6 @@ function setDeviceBlock(sessionId: string, fingerprint: string) {
   localStorage.setItem(deviceBlockKey(sessionId, fingerprint), '1')
 }
 
-/* ── Upload photo to Supabase Storage ── */
-async function uploadPhoto(file: File, sessionId: string): Promise<string | null> {
-  const ext = file.name.split('.').pop() ?? 'jpg'
-  const path = `${sessionId}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
-  const { error } = await supabase.storage
-    .from('photos')
-    .upload(path, file, { cacheControl: '3600', upsert: false })
-  if (error) { console.error('Photo upload error:', error); return null }
-  const { data } = supabase.storage.from('photos').getPublicUrl(path)
-  return data.publicUrl
-}
-
 /* ── Component ── */
 export default function StudentForm() {
   const [searchParams] = useSearchParams()
@@ -155,15 +143,8 @@ export default function StudentForm() {
   const [focusInput, setFocusInput] = useState(false)
   const [fingerprint] = useState(() => getFingerprint())
 
-  // ── Photo state
-  const [photoFile, setPhotoFile] = useState<File | null>(null)
-  const [photoPreview, setPhotoPreview] = useState<string | null>(null)
-  const [uploadProgress, setUploadProgress] = useState<'idle' | 'uploading' | 'done' | 'error'>('idle')
-  const fileInputRef = useRef<HTMLInputElement>(null)
-
   const [successName, setSuccessName] = useState('')
   const [successTime, setSuccessTime] = useState('')
-  const [successPhoto, setSuccessPhoto] = useState<string | null>(null)
 
   useEffect(() => {
     if (!sessionId) { setAppState('error'); return }
@@ -178,28 +159,6 @@ export default function StudentForm() {
       })
   }, [sessionId, fingerprint])
 
-  /* ── Handle photo file pick ── */
-  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    // Max 5 MB
-    if (file.size > 5 * 1024 * 1024) {
-      alert('Photo must be under 5 MB.')
-      return
-    }
-    setPhotoFile(file)
-    const reader = new FileReader()
-    reader.onload = ev => setPhotoPreview(ev.target?.result as string)
-    reader.readAsDataURL(file)
-  }
-
-  const removePhoto = () => {
-    setPhotoFile(null)
-    setPhotoPreview(null)
-    setUploadProgress('idle')
-    if (fileInputRef.current) fileInputRef.current.value = ''
-  }
-
   /* ── Submit ── */
   const handleSubmit = async () => {
     const name = studentName.trim()
@@ -208,20 +167,6 @@ export default function StudentForm() {
 
     setSubmitting(true)
 
-    // Upload photo if present
-    let photoUrl: string | null = null
-    if (photoFile) {
-      setUploadProgress('uploading')
-      photoUrl = await uploadPhoto(photoFile, sessionId)
-      if (!photoUrl) {
-        setUploadProgress('error')
-        alert('Photo upload failed. You can remove the photo and try again, or submit without it.')
-        setSubmitting(false)
-        return
-      }
-      setUploadProgress('done')
-    }
-
     const ip = await getIP()
 
     const { error } = await supabase.from('attendance').insert({
@@ -229,7 +174,7 @@ export default function StudentForm() {
       student_name: name,
       ip_address: ip,
       device_fingerprint: fingerprint,
-      photo_url: photoUrl,
+      // photo_url column will just remain null in Supabase
     })
 
     if (error) {
@@ -247,15 +192,7 @@ export default function StudentForm() {
     setDeviceBlock(sessionId, fingerprint)
     setSuccessName(name)
     setSuccessTime(new Date().toLocaleTimeString())
-    setSuccessPhoto(photoUrl)
     setAppState('success')
-  }
-
-  /* ── Submit button label ── */
-  const submitLabel = () => {
-    if (!submitting) return 'Submit Attendance'
-    if (uploadProgress === 'uploading') return 'Uploading photo…'
-    return 'Submitting…'
   }
 
   return (
@@ -280,10 +217,10 @@ export default function StudentForm() {
               <div style={s.bannerName}>{sessionData?.name}</div>
             </div>
             <h1 style={s.h1}>Mark Your<br />Attendance</h1>
-            <p style={s.subtitle}>Enter your full name and optionally add a photo.</p>
+            <p style={s.subtitle}>Enter your full name to check in.</p>
 
             {/* Name */}
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 24 }}>
               <label style={s.label}>Full Name</label>
               <input
                 style={{
@@ -302,83 +239,16 @@ export default function StudentForm() {
               />
             </div>
 
-            {/* Photo upload */}
-            <div style={{ marginBottom: 24 }}>
-              <label style={s.label}>
-                Photo <span style={{ color: 'var(--muted)', fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span>
-              </label>
-
-              {!photoPreview ? (
-                /* Drop zone / pick button */
-                <div
-                  onClick={() => fileInputRef.current?.click()}
-                  style={{
-                    border: '1.5px dashed var(--border)', borderRadius: 12,
-                    padding: '22px 16px', textAlign: 'center', cursor: 'pointer',
-                    color: 'var(--muted)', fontSize: 13,
-                    background: 'var(--surface2)',
-                    transition: 'border-color .2s',
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
-                  onMouseLeave={e => (e.currentTarget.style.borderColor = 'var(--border)')}
-                >
-                  <div style={{ fontSize: 28, marginBottom: 6 }}>🖼️</div>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>Tap to choose from your photos</div>
-                  <div style={{ fontSize: 11 }}>Pick from gallery or take a new photo · JPG, PNG, WEBP · max 5 MB</div>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    style={{ display: 'none' }}
-                    onChange={handlePhotoChange}
-                  />
-                </div>
-              ) : (
-                /* Preview */
-                <div style={{ position: 'relative', display: 'inline-block', width: '100%' }}>
-                  <img
-                    src={photoPreview}
-                    alt="preview"
-                    style={{
-                      width: '100%', maxHeight: 220, objectFit: 'cover',
-                      borderRadius: 12, border: '1px solid var(--border)', display: 'block',
-                    }}
-                  />
-                  <button
-                    onClick={removePhoto}
-                    style={{
-                      position: 'absolute', top: 8, right: 8,
-                      background: 'rgba(10,10,15,0.85)', border: '1px solid var(--border)',
-                      borderRadius: 8, padding: '4px 10px', color: 'var(--accent2)',
-                      fontWeight: 700, fontSize: 12, cursor: 'pointer',
-                    }}
-                  >
-                    ✕ Remove
-                  </button>
-                  {uploadProgress === 'uploading' && (
-                    <div style={{
-                      position: 'absolute', inset: 0, borderRadius: 12,
-                      background: 'rgba(10,10,15,0.6)',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      color: 'var(--accent)', fontWeight: 700, fontSize: 14,
-                    }}>
-                      Uploading…
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
             <button
               style={{ ...s.btnSubmit, opacity: submitting ? 0.55 : 1, cursor: submitting ? 'not-allowed' : 'pointer' }}
               onClick={handleSubmit}
               disabled={submitting}
             >
-              {submitLabel()}
+              {submitting ? 'Submitting…' : 'Submit Attendance'}
             </button>
 
             <div style={s.note}>
-              ✏️ Enter your own name. One submission per device per session. Photo is optional.
+              ✏️ Enter your own name. One submission per device per session.
             </div>
           </>
         )}
@@ -390,32 +260,18 @@ export default function StudentForm() {
             <div style={s.successTitle}>Attendance Marked!</div>
             <p style={s.successSub}>Your attendance has been recorded. You may close this page.</p>
 
-            {/* Show submitted photo */}
-            {successPhoto && (
-              <img
-                src={successPhoto}
-                alt="Your submitted photo"
-                style={{
-                  width: '100%', maxHeight: 180, objectFit: 'cover',
-                  borderRadius: 12, border: '1px solid var(--border)',
-                  marginBottom: 16, display: 'block',
-                }}
-              />
-            )}
-
             <div style={s.recordBox}>
               {[
                 { label: 'Name', value: successName },
                 { label: 'Session', value: sessionData?.name ?? '' },
                 { label: 'Time', value: successTime },
-                ...(successPhoto ? [{ label: 'Photo', value: '✓ Uploaded' }] : []),
               ].map((row, i, arr) => (
                 <div
                   key={row.label}
                   style={{ ...s.recordRow, borderBottom: i < arr.length - 1 ? '1px solid var(--border)' : 'none' }}
                 >
                   <span style={{ fontSize: 12, color: 'var(--muted)' }}>{row.label}</span>
-                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 500, color: row.label === 'Photo' ? 'var(--green)' : undefined }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 500 }}>
                     {row.value}
                   </span>
                 </div>
@@ -424,36 +280,28 @@ export default function StudentForm() {
           </>
         )}
 
-        {/* BLOCKED */}
+        {/* BLOCKED/CLOSED/ERROR states stay as they were */}
         {appState === 'blocked' && (
           <>
             <div style={s.stateIcon as React.CSSProperties}>🚫</div>
             <div style={{ ...s.stateTitle, color: 'var(--accent2)' }}>Already Submitted</div>
-            <p style={s.stateSub}>
-              Attendance from this device has already been recorded for this session.
-            </p>
+            <p style={s.stateSub}>Attendance from this device has already been recorded for this session.</p>
           </>
         )}
 
-        {/* CLOSED */}
         {appState === 'closed' && (
           <>
             <div style={s.stateIcon as React.CSSProperties}>🔒</div>
             <div style={{ ...s.stateTitle, color: 'var(--yellow)' }}>Session Closed</div>
-            <p style={s.stateSub}>
-              This attendance session has been closed by your teacher and is no longer accepting submissions.
-            </p>
+            <p style={s.stateSub}>This attendance session has been closed.</p>
           </>
         )}
 
-        {/* ERROR */}
         {appState === 'error' && (
           <>
             <div style={s.stateIcon as React.CSSProperties}>⚠️</div>
             <div style={{ ...s.stateTitle, color: 'var(--accent2)' }}>Invalid Session</div>
-            <p style={s.stateSub}>
-              This QR code or link is invalid. Please ask your teacher for a new one.
-            </p>
+            <p style={s.stateSub}>This link is invalid. Please ask your teacher for a new one.</p>
           </>
         )}
       </div>
